@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,28 +15,33 @@
  */
 package com.datastax.oss.driver.api.core.config;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Map;
 
 /**
  * The configuration of the driver.
  *
- * <p>Is is composed of options, that are organized into profiles. There is a default profile that
+ * <p>It is composed of options, that are organized into profiles. There is a default profile that
  * is always present, and additional, named profiles, that can override part of the options.
  * Profiles can be used to categorize queries that use the same parameters (for example, an
  * "analytics" profile vs. a "transactional" profile).
  */
 public interface DriverConfig {
-  DriverConfigProfile getDefaultProfile();
-
-  /** @throws IllegalArgumentException if there is no profile with this name. */
-  DriverConfigProfile getNamedProfile(String profileName);
 
   /**
-   * Returns an <b>immutable</b> view of all the named profiles.
-   *
-   * <p>Implementations typically return a defensive copy of their internal state; therefore this
-   * should not be used in performance-sensitive parts of the code, see {@link
-   * #getNamedProfile(String)} instead.
+   * Alias to get the default profile, which is stored under the name {@link
+   * DriverExecutionProfile#DEFAULT_NAME} and always present.
    */
-  Map<String, DriverConfigProfile> getNamedProfiles();
+  @NonNull
+  default DriverExecutionProfile getDefaultProfile() {
+    return getProfile(DriverExecutionProfile.DEFAULT_NAME);
+  }
+
+  /** @throws IllegalArgumentException if there is no profile with this name. */
+  @NonNull
+  DriverExecutionProfile getProfile(@NonNull String profileName);
+
+  /** Returns an <b>immutable</b> view of all named profiles (including the default profile). */
+  @NonNull
+  Map<String, ? extends DriverExecutionProfile> getProfiles();
 }

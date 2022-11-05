@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,32 +20,39 @@ import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.util.UUID;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class UuidCodec implements TypeCodec<UUID> {
+  @NonNull
   @Override
   public GenericType<UUID> getJavaType() {
     return GenericType.UUID;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return DataTypes.UUID;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return value instanceof UUID;
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
+  public boolean accepts(@NonNull Class<?> javaClass) {
     return javaClass == UUID.class;
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(UUID value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(@Nullable UUID value, @NonNull ProtocolVersion protocolVersion) {
     if (value == null) {
       return null;
     }
@@ -55,8 +62,9 @@ public class UuidCodec implements TypeCodec<UUID> {
     return bytes;
   }
 
+  @Nullable
   @Override
-  public UUID decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public UUID decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return null;
     } else if (bytes.remaining() != 16) {
@@ -67,13 +75,15 @@ public class UuidCodec implements TypeCodec<UUID> {
     }
   }
 
+  @NonNull
   @Override
-  public String format(UUID value) {
+  public String format(@Nullable UUID value) {
     return (value == null) ? "NULL" : value.toString();
   }
 
+  @Nullable
   @Override
-  public UUID parse(String value) {
+  public UUID parse(@Nullable String value) {
     try {
       return (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL"))
           ? null

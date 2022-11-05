@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
+import io.netty.util.Timer;
 import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.Future;
 
@@ -56,8 +57,8 @@ public interface NettyOptions {
 
   /**
    * The byte buffer allocator to use. This must always return the same instance. Note that this is
-   * also used by the default implementation of {@link InternalDriverContext#frameCodec()}, and the
-   * built-in {@link com.datastax.oss.protocol.internal.Compressor} implementations.
+   * also used by the default implementation of {@link InternalDriverContext#getFrameCodec()}, and
+   * the built-in {@link com.datastax.oss.protocol.internal.Compressor} implementations.
    */
   ByteBufAllocator allocator();
 
@@ -79,5 +80,13 @@ public interface NettyOptions {
    * that you have allocated elsewhere in this component, for example shut down custom event loop
    * groups.
    */
-  Future<?> onClose();
+  Future<Void> onClose();
+
+  /**
+   * The Timer on which non-I/O events should be scheduled. This must always return the same
+   * instance. This timer should be used for things like request timeout events and scheduling
+   * speculative executions. Under high load, scheduling these non-I/O events on a separate, lower
+   * resolution timer will allow for higher overall I/O throughput.
+   */
+  Timer getTimer();
 }

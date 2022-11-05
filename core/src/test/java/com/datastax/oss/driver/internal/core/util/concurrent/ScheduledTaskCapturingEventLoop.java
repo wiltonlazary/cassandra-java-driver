@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,22 +15,25 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
-import com.google.common.util.concurrent.Uninterruptibles;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.shaded.guava.common.util.concurrent.Uninterruptibles;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import io.netty.channel.DefaultEventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import org.mockito.Mockito;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 
 /**
  * Extend Netty's default event loop to capture scheduled tasks instead of running them. The tasks
@@ -41,14 +44,16 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
  *
  * <p>This is used to make unit tests independent of time.
  */
+@SuppressWarnings("FunctionalInterfaceClash") // does not matter for test code
 public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
 
-  private final BlockingQueue<CapturedTask> capturedTasks = new ArrayBlockingQueue<>(100);
+  private final BlockingQueue<CapturedTask<?>> capturedTasks = new ArrayBlockingQueue<>(100);
 
   public ScheduledTaskCapturingEventLoop(EventLoopGroup parent) {
     super(parent);
   }
 
+  @NonNull
   @Override
   public <V> ScheduledFuture<V> schedule(Callable<V> callable, long delay, TimeUnit unit) {
     CapturedTask<V> task = new CapturedTask<>(callable, delay, unit);
@@ -57,6 +62,7 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
     return task.scheduledFuture;
   }
 
+  @NonNull
   @Override
   public ScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit) {
     return schedule(
@@ -68,6 +74,7 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
         unit);
   }
 
+  @NonNull
   @Override
   public ScheduledFuture<?> scheduleAtFixedRate(
       Runnable command, long initialDelay, long period, TimeUnit unit) {
@@ -85,6 +92,7 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
     return task.scheduledFuture;
   }
 
+  @NonNull
   @Override
   public ScheduledFuture<?> scheduleWithFixedDelay(
       Runnable command, long initialDelay, long delay, TimeUnit unit) {
@@ -122,7 +130,7 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
     private final TimeUnit unit;
 
     @SuppressWarnings("unchecked")
-    private final ScheduledFuture<V> scheduledFuture = Mockito.mock(ScheduledFuture.class);
+    private final ScheduledFuture<V> scheduledFuture = mock(ScheduledFuture.class);
 
     CapturedTask(Callable<V> task, long initialDelay, TimeUnit unit) {
       this(task, initialDelay, -1, unit);
@@ -135,14 +143,13 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
       this.unit = unit;
 
       // If the code under test cancels the scheduled future, cancel our task
-      Mockito.when(scheduledFuture.cancel(anyBoolean()))
+      when(scheduledFuture.cancel(anyBoolean()))
           .thenAnswer(invocation -> futureTask.cancel(invocation.getArgument(0)));
 
       // Delegate methods of the scheduled future to our task (to be extended to more methods if
       // needed)
-      Mockito.when(scheduledFuture.isDone()).thenAnswer(invocation -> futureTask.isDone());
-      Mockito.when(scheduledFuture.isCancelled())
-          .thenAnswer(invocation -> futureTask.isCancelled());
+      when(scheduledFuture.isDone()).thenAnswer(invocation -> futureTask.isDone());
+      when(scheduledFuture.isCancelled()).thenAnswer(invocation -> futureTask.isCancelled());
     }
 
     public void run() {
@@ -151,7 +158,16 @@ public class ScheduledTaskCapturingEventLoop extends DefaultEventLoop {
     }
 
     public boolean isCancelled() {
-      return futureTask.isCancelled();
+      // futureTask.isCancelled() can create timing issues in CI environments, so give the
+      // cancellation a short time to complete instead:
+      try {
+        futureTask.get(3, TimeUnit.SECONDS);
+      } catch (CancellationException e) {
+        return true;
+      } catch (Exception e) {
+        // ignore
+      }
+      return false;
     }
 
     public long getInitialDelay(TimeUnit targetUnit) {

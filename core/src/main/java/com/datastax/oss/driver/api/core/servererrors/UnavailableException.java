@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,18 +18,20 @@ package com.datastax.oss.driver.api.core.servererrors;
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.ConsistencyLevel;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
 import com.datastax.oss.driver.api.core.session.Request;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Thrown when the coordinator knows there is not enough replicas alive to perform a query with the
  * requested consistency level.
  *
- * <p>This exception is processed by {@link RetryPolicy#onUnavailable(Request, ConsistencyLevel,
- * int, int, int)}, which will decide if it is rethrown directly to the client or if the request
- * should be retried. If all other tried nodes also fail, this exception will appear in the {@link
- * AllNodesFailedException} thrown to the client.
+ * <p>This exception is processed by {@link RetryPolicy#onUnavailableVerdict(Request,
+ * ConsistencyLevel, int, int, int)}, which will decide if it is rethrown directly to the client or
+ * if the request should be retried. If all other tried nodes also fail, this exception will appear
+ * in the {@link AllNodesFailedException} thrown to the client.
  */
 public class UnavailableException extends QueryExecutionException {
   private final ConsistencyLevel consistencyLevel;
@@ -37,7 +39,10 @@ public class UnavailableException extends QueryExecutionException {
   private final int alive;
 
   public UnavailableException(
-      Node coordinator, ConsistencyLevel consistencyLevel, int required, int alive) {
+      @NonNull Node coordinator,
+      @NonNull ConsistencyLevel consistencyLevel,
+      int required,
+      int alive) {
     this(
         coordinator,
         String.format(
@@ -46,23 +51,26 @@ public class UnavailableException extends QueryExecutionException {
         consistencyLevel,
         required,
         alive,
+        null,
         false);
   }
 
   private UnavailableException(
-      Node coordinator,
-      String message,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @NonNull ConsistencyLevel consistencyLevel,
       int required,
       int alive,
+      ExecutionInfo executionInfo,
       boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+    super(coordinator, message, executionInfo, writableStackTrace);
     this.consistencyLevel = consistencyLevel;
     this.required = required;
     this.alive = alive;
   }
 
   /** The consistency level of the operation triggering this exception. */
+  @NonNull
   public ConsistencyLevel getConsistencyLevel() {
     return consistencyLevel;
   }
@@ -83,9 +91,16 @@ public class UnavailableException extends QueryExecutionException {
     return alive;
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
     return new UnavailableException(
-        getCoordinator(), getMessage(), consistencyLevel, required, alive, true);
+        getCoordinator(),
+        getMessage(),
+        consistencyLevel,
+        required,
+        alive,
+        getExecutionInfo(),
+        true);
   }
 }

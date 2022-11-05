@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@
 package com.datastax.oss.driver.api.core.auth;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
-import java.net.SocketAddress;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Indicates an error during the authentication phase while connecting to a node.
@@ -28,19 +30,21 @@ import java.net.SocketAddress;
 public class AuthenticationException extends RuntimeException {
   private static final long serialVersionUID = 0;
 
-  private final SocketAddress address;
+  private final EndPoint endPoint;
 
-  public AuthenticationException(SocketAddress address, String message) {
-    this(address, message, null);
+  public AuthenticationException(@NonNull EndPoint endPoint, @NonNull String message) {
+    this(endPoint, message, null);
   }
 
-  public AuthenticationException(SocketAddress address, String message, Throwable cause) {
-    super(String.format("Authentication error on host %s: %s", address, message), cause);
-    this.address = address;
+  public AuthenticationException(
+      @NonNull EndPoint endPoint, @NonNull String message, @Nullable Throwable cause) {
+    super(String.format("Authentication error on node %s: %s", endPoint, message), cause);
+    this.endPoint = endPoint;
   }
 
   /** The address of the node that encountered the error. */
-  public SocketAddress getAddress() {
-    return address;
+  @NonNull
+  public EndPoint getEndPoint() {
+    return endPoint;
   }
 }

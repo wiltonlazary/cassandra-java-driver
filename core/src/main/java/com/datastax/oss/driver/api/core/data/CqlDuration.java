@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,23 @@
  */
 package com.datastax.oss.driver.api.core.data;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Objects;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.base.Objects;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import java.time.Duration;
+import java.time.Period;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.Temporal;
+import java.time.temporal.TemporalAmount;
+import java.time.temporal.TemporalUnit;
+import java.time.temporal.UnsupportedTemporalTypeException;
+import java.util.List;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import static com.google.common.base.Preconditions.checkArgument;
+import net.jcip.annotations.Immutable;
 
 /**
  * A duration, as defined in CQL.
@@ -30,7 +41,8 @@ import static com.google.common.base.Preconditions.checkArgument;
  * type differs from {@link java.time.Duration} (which only represents an amount between two points
  * in time, regardless of the calendar).
  */
-public final class CqlDuration {
+@Immutable
+public final class CqlDuration implements TemporalAmount {
 
   @VisibleForTesting static final long NANOS_PER_MICRO = 1000L;
   @VisibleForTesting static final long NANOS_PER_MILLI = 1000 * NANOS_PER_MICRO;
@@ -60,6 +72,9 @@ public final class CqlDuration {
   private static final Pattern ISO8601_ALTERNATIVE_PATTERN =
       Pattern.compile("P(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})");
 
+  private static final ImmutableList<TemporalUnit> TEMPORAL_UNITS =
+      ImmutableList.of(ChronoUnit.MONTHS, ChronoUnit.DAYS, ChronoUnit.NANOS);
+
   private final int months;
   private final int days;
   private final long nanoseconds;
@@ -67,7 +82,7 @@ public final class CqlDuration {
   private CqlDuration(int months, int days, long nanoseconds) {
     // Makes sure that all the values are negative if one of them is
     if ((months < 0 || days < 0 || nanoseconds < 0)
-        && ((months > 0 || days > 0 || nanoseconds > 0))) {
+        && (months > 0 || days > 0 || nanoseconds > 0)) {
       throw new IllegalArgumentException(
           String.format(
               "All values must be either negative or positive, got %d months, %d days, %d nanoseconds",
@@ -101,7 +116,7 @@ public final class CqlDuration {
    *   <li>multiple digits followed by a time unit like: 12h30m where the time unit can be:
    *       <ul>
    *         <li>{@code y}: years
-   *         <li>{@code m}: months
+   *         <li>{@code mo}: months
    *         <li>{@code w}: weeks
    *         <li>{@code d}: days
    *         <li>{@code h}: hours
@@ -111,57 +126,66 @@ public final class CqlDuration {
    *         <li>{@code us} or {@code µs}: microseconds
    *         <li>{@code ns}: nanoseconds
    *       </ul>
-   *
    *   <li>ISO 8601 format: P[n]Y[n]M[n]DT[n]H[n]M[n]S or P[n]W
    *   <li>ISO 8601 alternative format: P[YYYY]-[MM]-[DD]T[hh]:[mm]:[ss]
    * </ul>
    *
    * @param input the <code>String</code> to convert
    */
-  public static CqlDuration from(String input) {
+  public static CqlDuration from(@NonNull String input) {
     boolean isNegative = input.startsWith("-");
     String source = isNegative ? input.substring(1) : input;
 
     if (source.startsWith("P")) {
-      if (source.endsWith("W")) return parseIso8601WeekFormat(isNegative, source);
-
-      if (source.contains("-")) return parseIso8601AlternativeFormat(isNegative, source);
-
+      if (source.endsWith("W")) {
+        return parseIso8601WeekFormat(isNegative, source);
+      }
+      if (source.contains("-")) {
+        return parseIso8601AlternativeFormat(isNegative, source);
+      }
       return parseIso8601Format(isNegative, source);
     }
     return parseStandardFormat(isNegative, source);
   }
 
-  private static CqlDuration parseIso8601Format(boolean isNegative, String source) {
+  private static CqlDuration parseIso8601Format(boolean isNegative, @NonNull String source) {
     Matcher matcher = ISO8601_PATTERN.matcher(source);
     if (!matcher.matches())
       throw new IllegalArgumentException(
           String.format("Unable to convert '%s' to a duration", source));
 
     Builder builder = new Builder(isNegative);
-    if (matcher.group(1) != null) builder.addYears(groupAsLong(matcher, 2));
-
-    if (matcher.group(3) != null) builder.addMonths(groupAsLong(matcher, 4));
-
-    if (matcher.group(5) != null) builder.addDays(groupAsLong(matcher, 6));
-
+    if (matcher.group(1) != null) {
+      builder.addYears(groupAsLong(matcher, 2));
+    }
+    if (matcher.group(3) != null) {
+      builder.addMonths(groupAsLong(matcher, 4));
+    }
+    if (matcher.group(5) != null) {
+      builder.addDays(groupAsLong(matcher, 6));
+    }
     // Checks if the String contains time information
     if (matcher.group(7) != null) {
-      if (matcher.group(8) != null) builder.addHours(groupAsLong(matcher, 9));
-
-      if (matcher.group(10) != null) builder.addMinutes(groupAsLong(matcher, 11));
-
-      if (matcher.group(12) != null) builder.addSeconds(groupAsLong(matcher, 13));
+      if (matcher.group(8) != null) {
+        builder.addHours(groupAsLong(matcher, 9));
+      }
+      if (matcher.group(10) != null) {
+        builder.addMinutes(groupAsLong(matcher, 11));
+      }
+      if (matcher.group(12) != null) {
+        builder.addSeconds(groupAsLong(matcher, 13));
+      }
     }
     return builder.build();
   }
 
-  private static CqlDuration parseIso8601AlternativeFormat(boolean isNegative, String source) {
+  private static CqlDuration parseIso8601AlternativeFormat(
+      boolean isNegative, @NonNull String source) {
     Matcher matcher = ISO8601_ALTERNATIVE_PATTERN.matcher(source);
-    if (!matcher.matches())
+    if (!matcher.matches()) {
       throw new IllegalArgumentException(
           String.format("Unable to convert '%s' to a duration", source));
-
+    }
     return new Builder(isNegative)
         .addYears(groupAsLong(matcher, 1))
         .addMonths(groupAsLong(matcher, 2))
@@ -172,21 +196,21 @@ public final class CqlDuration {
         .build();
   }
 
-  private static CqlDuration parseIso8601WeekFormat(boolean isNegative, String source) {
+  private static CqlDuration parseIso8601WeekFormat(boolean isNegative, @NonNull String source) {
     Matcher matcher = ISO8601_WEEK_PATTERN.matcher(source);
-    if (!matcher.matches())
+    if (!matcher.matches()) {
       throw new IllegalArgumentException(
           String.format("Unable to convert '%s' to a duration", source));
-
+    }
     return new Builder(isNegative).addWeeks(groupAsLong(matcher, 1)).build();
   }
 
-  private static CqlDuration parseStandardFormat(boolean isNegative, String source) {
+  private static CqlDuration parseStandardFormat(boolean isNegative, @NonNull String source) {
     Matcher matcher = STANDARD_PATTERN.matcher(source);
-    if (!matcher.find())
+    if (!matcher.find()) {
       throw new IllegalArgumentException(
           String.format("Unable to convert '%s' to a duration", source));
-
+    }
     Builder builder = new Builder(isNegative);
     boolean done;
 
@@ -197,19 +221,19 @@ public final class CqlDuration {
       done = matcher.end() == source.length();
     } while (matcher.find());
 
-    if (!done)
+    if (!done) {
       throw new IllegalArgumentException(
           String.format("Unable to convert '%s' to a duration", source));
-
+    }
     return builder.build();
   }
 
-  private static long groupAsLong(Matcher matcher, int group) {
+  private static long groupAsLong(@NonNull Matcher matcher, int group) {
     return Long.parseLong(matcher.group(group));
   }
 
-  private static Builder add(Builder builder, long number, String symbol) {
-    String s = symbol.toLowerCase();
+  private static Builder add(@NonNull Builder builder, long number, @NonNull String symbol) {
+    String s = symbol.toLowerCase(Locale.ROOT);
     if (s.equals("y")) {
       return builder.addYears(number);
     } else if (s.equals("mo")) {
@@ -243,9 +267,11 @@ public final class CqlDuration {
    * @param unit the time unit to append after the result of the division
    * @return the remainder of the division
    */
-  private static long append(StringBuilder builder, long dividend, long divisor, String unit) {
-    if (dividend == 0 || dividend < divisor) return dividend;
-
+  private static long append(
+      @NonNull StringBuilder builder, long dividend, long divisor, @NonNull String unit) {
+    if (dividend == 0 || dividend < divisor) {
+      return dividend;
+    }
     builder.append(dividend / divisor).append(unit);
     return dividend % divisor;
   }
@@ -277,6 +303,54 @@ public final class CqlDuration {
     return nanoseconds;
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This implementation converts the months and days components to a {@link Period}, and the
+   * nanosecond component to a {@link Duration}, and adds those two amounts to the temporal object.
+   * Therefore the chronology of the temporal must be either the ISO chronology or null.
+   *
+   * @see Period#addTo(Temporal)
+   * @see Duration#addTo(Temporal)
+   */
+  @Override
+  public Temporal addTo(Temporal temporal) {
+    return temporal.plus(Period.of(0, months, days)).plus(Duration.ofNanos(nanoseconds));
+  }
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>This implementation converts the months and days components to a {@link Period}, and the
+   * nanosecond component to a {@link Duration}, and subtracts those two amounts to the temporal
+   * object. Therefore the chronology of the temporal must be either the ISO chronology or null.
+   *
+   * @see Period#subtractFrom(Temporal)
+   * @see Duration#subtractFrom(Temporal)
+   */
+  @Override
+  public Temporal subtractFrom(Temporal temporal) {
+    return temporal.minus(Period.of(0, months, days)).minus(Duration.ofNanos(nanoseconds));
+  }
+
+  @Override
+  public long get(TemporalUnit unit) {
+    if (unit == ChronoUnit.MONTHS) {
+      return months;
+    } else if (unit == ChronoUnit.DAYS) {
+      return days;
+    } else if (unit == ChronoUnit.NANOS) {
+      return nanoseconds;
+    } else {
+      throw new UnsupportedTemporalTypeException("Unsupported unit: " + unit);
+    }
+  }
+
+  @Override
+  public List<TemporalUnit> getUnits() {
+    return TEMPORAL_UNITS;
+  }
+
   @Override
   public boolean equals(Object other) {
     if (other == this) {
@@ -300,8 +374,9 @@ public final class CqlDuration {
   public String toString() {
     StringBuilder builder = new StringBuilder();
 
-    if (months < 0 || days < 0 || nanoseconds < 0) builder.append('-');
-
+    if (months < 0 || days < 0 || nanoseconds < 0) {
+      builder.append('-');
+    }
     long remainder = append(builder, Math.abs(months), MONTHS_PER_YEAR, "y");
     append(builder, remainder, 1, "mo");
 
@@ -337,10 +412,14 @@ public final class CqlDuration {
      * @param numberOfYears the number of years to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addYears(long numberOfYears) {
       validateOrder(1);
       validateMonths(numberOfYears, MONTHS_PER_YEAR);
-      months += numberOfYears * MONTHS_PER_YEAR;
+      // Cast to avoid http://errorprone.info/bugpattern/NarrowingCompoundAssignment
+      // We could also change the method to accept an int, but keeping long allows us to keep the
+      // calling code generic.
+      months += (int) numberOfYears * MONTHS_PER_YEAR;
       return this;
     }
 
@@ -350,10 +429,11 @@ public final class CqlDuration {
      * @param numberOfMonths the number of months to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addMonths(long numberOfMonths) {
       validateOrder(2);
       validateMonths(numberOfMonths, 1);
-      months += numberOfMonths;
+      months += (int) numberOfMonths;
       return this;
     }
 
@@ -363,10 +443,11 @@ public final class CqlDuration {
      * @param numberOfWeeks the number of weeks to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addWeeks(long numberOfWeeks) {
       validateOrder(3);
       validateDays(numberOfWeeks, DAYS_PER_WEEK);
-      days += numberOfWeeks * DAYS_PER_WEEK;
+      days += (int) numberOfWeeks * DAYS_PER_WEEK;
       return this;
     }
 
@@ -376,10 +457,11 @@ public final class CqlDuration {
      * @param numberOfDays the number of days to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addDays(long numberOfDays) {
       validateOrder(4);
       validateDays(numberOfDays, 1);
-      days += numberOfDays;
+      days += (int) numberOfDays;
       return this;
     }
 
@@ -389,6 +471,7 @@ public final class CqlDuration {
      * @param numberOfHours the number of hours to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addHours(long numberOfHours) {
       validateOrder(5);
       validateNanos(numberOfHours, NANOS_PER_HOUR);
@@ -402,6 +485,7 @@ public final class CqlDuration {
      * @param numberOfMinutes the number of minutes to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addMinutes(long numberOfMinutes) {
       validateOrder(6);
       validateNanos(numberOfMinutes, NANOS_PER_MINUTE);
@@ -415,6 +499,7 @@ public final class CqlDuration {
      * @param numberOfSeconds the number of seconds to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addSeconds(long numberOfSeconds) {
       validateOrder(7);
       validateNanos(numberOfSeconds, NANOS_PER_SECOND);
@@ -428,6 +513,7 @@ public final class CqlDuration {
      * @param numberOfMillis the number of milliseconds to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addMillis(long numberOfMillis) {
       validateOrder(8);
       validateNanos(numberOfMillis, NANOS_PER_MILLI);
@@ -441,6 +527,7 @@ public final class CqlDuration {
      * @param numberOfMicros the number of microseconds to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addMicros(long numberOfMicros) {
       validateOrder(9);
       validateNanos(numberOfMicros, NANOS_PER_MICRO);
@@ -454,6 +541,7 @@ public final class CqlDuration {
      * @param numberOfNanos the number of nanoseconds to add.
      * @return this {@code Builder}
      */
+    @NonNull
     public Builder addNanos(long numberOfNanos) {
       validateOrder(10);
       validateNanos(numberOfNanos, 1);
@@ -498,8 +586,8 @@ public final class CqlDuration {
      * @param limit the limit on the number of units
      * @param unitName the unit name
      */
-    private void validate(long units, long limit, String unitName) {
-      checkArgument(
+    private void validate(long units, long limit, @NonNull String unitName) {
+      Preconditions.checkArgument(
           units <= limit,
           "Invalid duration. The total number of %s must be less or equal to %s",
           unitName,
@@ -512,17 +600,17 @@ public final class CqlDuration {
      * @param unitIndex the unit index (e.g. years=1, months=2, ...)
      */
     private void validateOrder(int unitIndex) {
-      if (unitIndex == currentUnitIndex)
+      if (unitIndex == currentUnitIndex) {
         throw new IllegalArgumentException(
             String.format(
                 "Invalid duration. The %s are specified multiple times", getUnitName(unitIndex)));
-
-      if (unitIndex <= currentUnitIndex)
+      }
+      if (unitIndex <= currentUnitIndex) {
         throw new IllegalArgumentException(
             String.format(
                 "Invalid duration. The %s should be after %s",
                 getUnitName(currentUnitIndex), getUnitName(unitIndex)));
-
+      }
       currentUnitIndex = unitIndex;
     }
 
@@ -532,6 +620,7 @@ public final class CqlDuration {
      * @param unitIndex the unit index
      * @return the name of the unit corresponding to the specified index.
      */
+    @NonNull
     private String getUnitName(int unitIndex) {
       switch (unitIndex) {
         case 1:
@@ -559,6 +648,7 @@ public final class CqlDuration {
       }
     }
 
+    @NonNull
     public CqlDuration build() {
       return isNegative
           ? new CqlDuration(-months, -days, -nanoseconds)

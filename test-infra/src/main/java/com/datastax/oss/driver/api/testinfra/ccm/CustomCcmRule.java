@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,6 @@
  */
 package com.datastax.oss.driver.api.testinfra.ccm;
 
-import com.datastax.oss.driver.api.core.CassandraVersion;
-import com.datastax.oss.driver.internal.testinfra.ccm.BaseCcmRule;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -30,7 +28,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class CustomCcmRule extends BaseCcmRule {
 
-  private static AtomicReference<CustomCcmRule> current = new AtomicReference<>();
+  private static final AtomicReference<CustomCcmRule> CURRENT = new AtomicReference<>();
 
   CustomCcmRule(CcmBridge ccmBridge) {
     super(ccmBridge);
@@ -38,9 +36,9 @@ public class CustomCcmRule extends BaseCcmRule {
 
   @Override
   protected void before() {
-    if (current.get() == null && current.compareAndSet(null, this)) {
+    if (CURRENT.get() == null && CURRENT.compareAndSet(null, this)) {
       super.before();
-    } else if (current.get() != this) {
+    } else if (CURRENT.get() != this) {
       throw new IllegalStateException(
           "Attempting to use a Ccm rule while another is in use.  This is disallowed");
     }
@@ -49,7 +47,11 @@ public class CustomCcmRule extends BaseCcmRule {
   @Override
   protected void after() {
     super.after();
-    current.compareAndSet(this, null);
+    CURRENT.compareAndSet(this, null);
+  }
+
+  public CcmBridge getCcmBridge() {
+    return ccmBridge;
   }
 
   public static Builder builder() {
@@ -70,18 +72,38 @@ public class CustomCcmRule extends BaseCcmRule {
       return this;
     }
 
+    public Builder withDseConfiguration(String key, Object value) {
+      bridgeBuilder.withDseConfiguration(key, value);
+      return this;
+    }
+
+    public Builder withDseConfiguration(String rawYaml) {
+      bridgeBuilder.withDseConfiguration(rawYaml);
+      return this;
+    }
+
+    public Builder withDseWorkloads(String... workloads) {
+      bridgeBuilder.withDseWorkloads(workloads);
+      return this;
+    }
+
     public Builder withJvmArgs(String... jvmArgs) {
       bridgeBuilder.withJvmArgs(jvmArgs);
       return this;
     }
 
-    public Builder withCassandraVersion(CassandraVersion cassandraVersion) {
-      bridgeBuilder.withCassandraVersion(cassandraVersion);
+    public Builder withCreateOption(String option) {
+      bridgeBuilder.withCreateOption(option);
       return this;
     }
 
     public Builder withSsl() {
       bridgeBuilder.withSsl();
+      return this;
+    }
+
+    public Builder withSslLocalhostCn() {
+      bridgeBuilder.withSslLocalhostCn();
       return this;
     }
 

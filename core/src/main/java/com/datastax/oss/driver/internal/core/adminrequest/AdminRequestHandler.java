@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,18 +17,21 @@ package com.datastax.oss.driver.internal.core.adminrequest;
 
 import com.datastax.oss.driver.api.core.DriverTimeoutException;
 import com.datastax.oss.driver.api.core.ProtocolVersion;
+import com.datastax.oss.driver.api.core.connection.BusyConnectionException;
+import com.datastax.oss.driver.api.core.cql.Statement;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import com.datastax.oss.driver.internal.core.channel.ResponseCallback;
 import com.datastax.oss.driver.internal.core.util.concurrent.UncaughtExceptions;
+import com.datastax.oss.driver.shaded.guava.common.collect.Maps;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.Message;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
 import com.datastax.oss.protocol.internal.request.Query;
 import com.datastax.oss.protocol.internal.request.query.QueryOptions;
+import com.datastax.oss.protocol.internal.response.Result;
 import com.datastax.oss.protocol.internal.response.result.Prepared;
 import com.datastax.oss.protocol.internal.response.result.Rows;
-import com.google.common.collect.Maps;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.net.InetAddress;
@@ -40,14 +43,29 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Handles the lifecyle of an admin request (such as a node refresh or schema refresh query). */
-public class AdminRequestHandler implements ResponseCallback {
+/** Handles the lifecycle of an admin request (such as a node refresh or schema refresh query). */
+@ThreadSafe
+public class AdminRequestHandler<ResultT> implements ResponseCallback {
   private static final Logger LOG = LoggerFactory.getLogger(AdminRequestHandler.class);
 
-  public static AdminRequestHandler query(
+  public static AdminRequestHandler<Void> call(
+      DriverChannel channel, Query query, Duration timeout, String logPrefix) {
+    return new AdminRequestHandler<>(
+        channel,
+        true,
+        query,
+        Frame.NO_PAYLOAD,
+        timeout,
+        logPrefix,
+        "call '" + query.query + "'",
+        com.datastax.oss.protocol.internal.response.result.Void.class);
+  }
+
+  public static AdminRequestHandler<AdminResult> query(
       DriverChannel channel,
       String query,
       Map<String, Object> parameters,
@@ -58,64 +76,81 @@ public class AdminRequestHandler implements ResponseCallback {
         new Query(
             query,
             buildQueryOptions(pageSize, serialize(parameters, channel.protocolVersion()), null));
-    String debugString = "query '" + query + "'";
+    String debugString = "query '" + message.query + "'";
     if (!parameters.isEmpty()) {
       debugString += " with parameters " + parameters;
     }
-    return new AdminRequestHandler(channel, message, timeout, logPrefix, debugString);
+    return new AdminRequestHandler<>(
+        channel, true, message, Frame.NO_PAYLOAD, timeout, logPrefix, debugString, Rows.class);
   }
 
-  public static AdminRequestHandler query(
+  public static AdminRequestHandler<AdminResult> query(
       DriverChannel channel, String query, Duration timeout, int pageSize, String logPrefix) {
     return query(channel, query, Collections.emptyMap(), timeout, pageSize, logPrefix);
   }
 
   private final DriverChannel channel;
+  private final boolean shouldPreAcquireId;
   private final Message message;
+  private final Map<String, ByteBuffer> customPayload;
   private final Duration timeout;
   private final String logPrefix;
   private final String debugString;
-  private final CompletableFuture<AdminResult> result = new CompletableFuture<>();
+  private final Class<? extends Result> expectedResponseType;
+  protected final CompletableFuture<ResultT> result = new CompletableFuture<>();
 
   // This is only ever accessed on the channel's event loop, so it doesn't need to be volatile
   private ScheduledFuture<?> timeoutFuture;
 
-  public AdminRequestHandler(
+  protected AdminRequestHandler(
       DriverChannel channel,
+      boolean shouldPreAcquireId,
       Message message,
+      Map<String, ByteBuffer> customPayload,
       Duration timeout,
       String logPrefix,
-      String debugString) {
+      String debugString,
+      Class<? extends Result> expectedResponseType) {
     this.channel = channel;
+    this.shouldPreAcquireId = shouldPreAcquireId;
     this.message = message;
+    this.customPayload = customPayload;
     this.timeout = timeout;
     this.logPrefix = logPrefix;
     this.debugString = debugString;
+    this.expectedResponseType = expectedResponseType;
   }
 
-  public CompletionStage<AdminResult> start() {
-    return start(Frame.NO_PAYLOAD);
-  }
-
-  public CompletionStage<AdminResult> start(Map<String, ByteBuffer> customPayload) {
+  public CompletionStage<ResultT> start() {
     LOG.debug("[{}] Executing {}", logPrefix, this);
-    channel.write(message, false, customPayload, this).addListener(this::onWriteComplete);
+    if (shouldPreAcquireId && !channel.preAcquireId()) {
+      setFinalError(
+          new BusyConnectionException(
+              String.format(
+                  "%s has reached its maximum number of simultaneous requests", channel)));
+    } else {
+      channel.write(message, false, customPayload, this).addListener(this::onWriteComplete);
+    }
     return result;
   }
 
   private void onWriteComplete(Future<? super Void> future) {
     if (future.isSuccess()) {
       LOG.debug("[{}] Successfully wrote {}, waiting for response", logPrefix, this);
-      timeoutFuture =
-          channel.eventLoop().schedule(this::fireTimeout, timeout.toNanos(), TimeUnit.NANOSECONDS);
-      timeoutFuture.addListener(UncaughtExceptions::log);
+      if (timeout.toNanos() > 0) {
+        timeoutFuture =
+            channel
+                .eventLoop()
+                .schedule(this::fireTimeout, timeout.toNanos(), TimeUnit.NANOSECONDS);
+        timeoutFuture.addListener(UncaughtExceptions::log);
+      }
     } else {
-      result.completeExceptionally(future.cause());
+      setFinalError(future.cause());
     }
   }
 
   private void fireTimeout() {
-    result.completeExceptionally(
+    setFinalError(
         new DriverTimeoutException(String.format("%s timed out after %s", debugString, timeout)));
     if (!channel.closeFuture().isDone()) {
       channel.cancel(this);
@@ -127,7 +162,7 @@ public class AdminRequestHandler implements ResponseCallback {
     if (timeoutFuture != null) {
       timeoutFuture.cancel(true);
     }
-    result.completeExceptionally(error);
+    setFinalError(error);
   }
 
   @Override
@@ -137,32 +172,54 @@ public class AdminRequestHandler implements ResponseCallback {
     }
     Message message = responseFrame.message;
     LOG.debug("[{}] Got response {}", logPrefix, responseFrame.message);
-    if (message instanceof Rows) {
+    if (!expectedResponseType.isInstance(message)) {
+      // Note that this also covers error responses, no need to get too fancy here
+      setFinalError(new UnexpectedResponseException(debugString, message));
+    } else if (expectedResponseType == Rows.class) {
       Rows rows = (Rows) message;
       ByteBuffer pagingState = rows.getMetadata().pagingState;
       AdminRequestHandler nextHandler = (pagingState == null) ? null : this.copy(pagingState);
-      result.complete(new AdminResult(rows, nextHandler, channel.protocolVersion()));
-    } else if (message instanceof Prepared) {
-      // Internal prepares are only "reprepare on up" types of queries, where we only care about
-      // success, not the actual result, so this is good enough:
-      result.complete(null);
+      // The public factory methods guarantee that expectedResponseType and ResultT always match:
+      @SuppressWarnings("unchecked")
+      ResultT result = (ResultT) new AdminResult(rows, nextHandler, channel.protocolVersion());
+      setFinalResult(result);
+    } else if (expectedResponseType == Prepared.class) {
+      Prepared prepared = (Prepared) message;
+      @SuppressWarnings("unchecked")
+      ResultT result = (ResultT) ByteBuffer.wrap(prepared.preparedQueryId);
+      setFinalResult(result);
+    } else if (expectedResponseType
+        == com.datastax.oss.protocol.internal.response.result.Void.class) {
+      setFinalResult(null);
     } else {
-      result.completeExceptionally(
-          // The actual exception type does not really matters, this is only logged, never
-          // returned to the client
-          new IllegalArgumentException(
-              String.format("%s got unexpected response %s", debugString, message)));
+      setFinalError(new AssertionError("Unhandled response type" + expectedResponseType));
     }
   }
 
-  private AdminRequestHandler copy(ByteBuffer pagingState) {
+  protected boolean setFinalResult(ResultT result) {
+    return this.result.complete(result);
+  }
+
+  protected boolean setFinalError(Throwable error) {
+    return result.completeExceptionally(error);
+  }
+
+  private AdminRequestHandler<ResultT> copy(ByteBuffer pagingState) {
     assert message instanceof Query;
     Query current = (Query) this.message;
     QueryOptions currentOptions = current.options;
     QueryOptions newOptions =
         buildQueryOptions(currentOptions.pageSize, currentOptions.namedValues, pagingState);
-    return new AdminRequestHandler(
-        channel, new Query(current.query, newOptions), timeout, logPrefix, debugString);
+    return new AdminRequestHandler<>(
+        channel,
+        // This is called for next page queries, so we always need to reacquire an id:
+        true,
+        new Query(current.query, newOptions),
+        customPayload,
+        timeout,
+        logPrefix,
+        debugString,
+        expectedResponseType);
   }
 
   private static QueryOptions buildQueryOptions(
@@ -175,7 +232,9 @@ public class AdminRequestHandler implements ResponseCallback {
         pageSize,
         pagingState,
         ProtocolConstants.ConsistencyLevel.SERIAL,
-        Long.MIN_VALUE);
+        Statement.NO_DEFAULT_TIMESTAMP,
+        null,
+        Statement.NO_NOW_IN_SECONDS);
   }
 
   private static Map<String, ByteBuffer> serialize(
@@ -195,7 +254,9 @@ public class AdminRequestHandler implements ResponseCallback {
     } else if (parameter instanceof List && ((List) parameter).get(0) instanceof String) {
       @SuppressWarnings("unchecked")
       List<String> l = (List<String>) parameter;
-      return AdminResult.Row.LIST_OF_TEXT.encode(l, protocolVersion);
+      return AdminRow.LIST_OF_TEXT.encode(l, protocolVersion);
+    } else if (parameter instanceof Integer) {
+      return TypeCodecs.INT.encode((Integer) parameter, protocolVersion);
     } else {
       throw new IllegalArgumentException(
           "Unsupported variable type for admin query: " + parameter.getClass());

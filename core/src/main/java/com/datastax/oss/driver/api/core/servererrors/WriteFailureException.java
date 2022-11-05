@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,12 @@ package com.datastax.oss.driver.api.core.servererrors;
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.ConsistencyLevel;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
-import com.datastax.oss.driver.api.core.retry.WriteType;
 import com.datastax.oss.driver.api.core.session.Request;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.net.InetAddress;
 import java.util.Map;
 
@@ -31,10 +33,10 @@ import java.util.Map;
  * <p>This happens when some of the replicas that were contacted by the coordinator replied with an
  * error.
  *
- * <p>This exception is processed by {@link RetryPolicy#onErrorResponse(Request, Throwable, int)},
- * which will decide if it is rethrown directly to the client or if the request should be retried.
- * If all other tried nodes also fail, this exception will appear in the {@link
- * AllNodesFailedException} thrown to the client.
+ * <p>This exception is processed by {@link RetryPolicy#onErrorResponseVerdict(Request,
+ * CoordinatorException, int)}, which will decide if it is rethrown directly to the client or if the
+ * request should be retried. If all other tried nodes also fail, this exception will appear in the
+ * {@link AllNodesFailedException} thrown to the client.
  */
 public class WriteFailureException extends QueryConsistencyException {
 
@@ -43,13 +45,13 @@ public class WriteFailureException extends QueryConsistencyException {
   private final Map<InetAddress, Integer> reasonMap;
 
   public WriteFailureException(
-      Node coordinator,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull ConsistencyLevel consistencyLevel,
       int received,
       int blockFor,
-      WriteType writeType,
+      @NonNull WriteType writeType,
       int numFailures,
-      Map<InetAddress, Integer> reasonMap) {
+      @NonNull Map<InetAddress, Integer> reasonMap) {
     this(
         coordinator,
         String.format(
@@ -62,26 +64,36 @@ public class WriteFailureException extends QueryConsistencyException {
         writeType,
         numFailures,
         reasonMap,
+        null,
         false);
   }
 
   private WriteFailureException(
-      Node coordinator,
-      String message,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @NonNull ConsistencyLevel consistencyLevel,
       int received,
       int blockFor,
-      WriteType writeType,
+      @NonNull WriteType writeType,
       int numFailures,
-      Map<InetAddress, Integer> reasonMap,
+      @NonNull Map<InetAddress, Integer> reasonMap,
+      @Nullable ExecutionInfo executionInfo,
       boolean writableStackTrace) {
-    super(coordinator, message, consistencyLevel, received, blockFor, writableStackTrace);
+    super(
+        coordinator,
+        message,
+        consistencyLevel,
+        received,
+        blockFor,
+        executionInfo,
+        writableStackTrace);
     this.writeType = writeType;
     this.numFailures = numFailures;
     this.reasonMap = reasonMap;
   }
 
   /** The type of the write for which this failure was raised. */
+  @NonNull
   public WriteType getWriteType() {
     return writeType;
   }
@@ -110,10 +122,12 @@ public class WriteFailureException extends QueryConsistencyException {
    * <p>This feature is available for protocol v5 or above only. With lower protocol versions, the
    * map will always be empty.
    */
+  @NonNull
   public Map<InetAddress, Integer> getReasonMap() {
     return reasonMap;
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
     return new WriteFailureException(
@@ -125,6 +139,7 @@ public class WriteFailureException extends QueryConsistencyException {
         writeType,
         numFailures,
         reasonMap,
+        getExecutionInfo(),
         true);
   }
 }

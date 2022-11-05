@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,17 @@ package com.datastax.oss.driver.internal.core.channel;
 
 import com.datastax.oss.driver.api.core.metadata.Node;
 import java.util.Objects;
+import net.jcip.annotations.Immutable;
 
 /** Events relating to driver channels. */
+@Immutable
 public class ChannelEvent {
   public enum Type {
     OPENED,
     CLOSED,
     RECONNECTION_STARTED,
-    RECONNECTION_STOPPED
+    RECONNECTION_STOPPED,
+    CONTROL_CONNECTION_FAILED
   }
 
   public static ChannelEvent channelOpened(Node node) {
@@ -41,6 +44,11 @@ public class ChannelEvent {
 
   public static ChannelEvent reconnectionStopped(Node node) {
     return new ChannelEvent(Type.RECONNECTION_STOPPED, node);
+  }
+
+  /** The control connection tried to use this node, but failed to open a channel. */
+  public static ChannelEvent controlConnectionFailed(Node node) {
+    return new ChannelEvent(Type.CONTROL_CONNECTION_FAILED, node);
   }
 
   public final Type type;

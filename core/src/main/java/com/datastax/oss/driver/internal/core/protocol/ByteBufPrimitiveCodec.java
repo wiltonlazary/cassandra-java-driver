@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,10 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.zip.CRC32;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
 
   private final ByteBufAllocator allocator;
@@ -35,7 +38,7 @@ public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
 
   @Override
   public ByteBuf allocate(int size) {
-    return allocator.ioBuffer();
+    return allocator.ioBuffer(size, size);
   }
 
   @Override
@@ -65,6 +68,16 @@ public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
   }
 
   @Override
+  public void markReaderIndex(ByteBuf source) {
+    source.markReaderIndex();
+  }
+
+  @Override
+  public void resetReaderIndex(ByteBuf source) {
+    source.resetReaderIndex();
+  }
+
+  @Override
   public byte readByte(ByteBuf source) {
     return source.readByte();
   }
@@ -72,6 +85,11 @@ public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
   @Override
   public int readInt(ByteBuf source) {
     return source.readInt();
+  }
+
+  @Override
+  public int readInt(ByteBuf source, int offset) {
+    return source.getInt(source.readerIndex() + offset);
   }
 
   @Override
@@ -126,6 +144,16 @@ public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
   }
 
   @Override
+  public ByteBuf readRetainedSlice(ByteBuf source, int sliceLength) {
+    return source.readRetainedSlice(sliceLength);
+  }
+
+  @Override
+  public void updateCrc(ByteBuf source, CRC32 crc) {
+    crc.update(source.internalNioBuffer(source.readerIndex(), source.readableBytes()));
+  }
+
+  @Override
   public void writeByte(byte b, ByteBuf dest) {
     dest.writeByte(b);
   }
@@ -177,13 +205,24 @@ public class ByteBufPrimitiveCodec implements PrimitiveCodec<ByteBuf> {
   }
 
   @Override
+  public void writeBytes(byte[] bytes, ByteBuf dest) {
+    if (bytes == null) {
+      writeInt(-1, dest);
+    } else {
+      writeInt(bytes.length, dest);
+      dest.writeBytes(bytes);
+    }
+  }
+
+  @Override
   public void writeShortBytes(byte[] bytes, ByteBuf dest) {
     writeUnsignedShort(bytes.length, dest);
     dest.writeBytes(bytes);
   }
 
   // Reads *all* readable bytes from a buffer and return them.
-  // If the buffer is backed by an array, this will return the underlying array directly, without copy.
+  // If the buffer is backed by an array, this will return the underlying array directly, without
+  // copy.
   private static byte[] readRawBytes(ByteBuf buffer) {
     if (buffer.hasArray() && buffer.readableBytes() == buffer.array().length) {
       // Move the readerIndex just so we consistently consume the input

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,23 @@
 package com.datastax.oss.driver.api.core.type;
 
 import com.datastax.oss.protocol.internal.ProtocolConstants;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 public interface ListType extends DataType {
+
+  @NonNull
   DataType getElementType();
 
   boolean isFrozen();
 
+  @NonNull
+  @Override
+  default String asCql(boolean includeFrozen, boolean pretty) {
+    String template = (isFrozen() && includeFrozen) ? "frozen<list<%s>>" : "list<%s>";
+    return String.format(template, getElementType().asCql(includeFrozen, pretty));
+  }
+
+  @Override
   default int getProtocolCode() {
     return ProtocolConstants.DataType.LIST;
   }

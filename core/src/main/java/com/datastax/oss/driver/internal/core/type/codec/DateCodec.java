@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
+import static java.lang.Long.parseLong;
+
 import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.DataTypes;
@@ -22,39 +24,44 @@ import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import com.datastax.oss.driver.internal.core.util.Strings;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import net.jcip.annotations.ThreadSafe;
 
-import static java.lang.Long.parseLong;
-
+@ThreadSafe
 public class DateCodec implements TypeCodec<LocalDate> {
 
   private static final LocalDate EPOCH = LocalDate.of(1970, 1, 1);
 
+  @NonNull
   @Override
   public GenericType<LocalDate> getJavaType() {
     return GenericType.LOCAL_DATE;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return DataTypes.DATE;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return value instanceof LocalDate;
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
+  public boolean accepts(@NonNull Class<?> javaClass) {
     return javaClass == LocalDate.class;
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(LocalDate value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(@Nullable LocalDate value, @NonNull ProtocolVersion protocolVersion) {
     if (value == null) {
       return null;
     }
@@ -63,8 +70,9 @@ public class DateCodec implements TypeCodec<LocalDate> {
     return TypeCodecs.INT.encodePrimitive(unsigned, protocolVersion);
   }
 
+  @Nullable
   @Override
-  public LocalDate decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public LocalDate decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return null;
     }
@@ -73,13 +81,15 @@ public class DateCodec implements TypeCodec<LocalDate> {
     return EPOCH.plusDays(signed);
   }
 
+  @NonNull
   @Override
-  public String format(LocalDate value) {
+  public String format(@Nullable LocalDate value) {
     return (value == null) ? "NULL" : Strings.quote(DateTimeFormatter.ISO_LOCAL_DATE.format(value));
   }
 
+  @Nullable
   @Override
-  public LocalDate parse(String value) {
+  public LocalDate parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) {
       return null;
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
-import com.datastax.oss.driver.api.core.config.DriverConfigProfile;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.connection.HeartbeatException;
 import com.datastax.oss.protocol.internal.Message;
 import com.datastax.oss.protocol.internal.request.Options;
@@ -25,26 +25,22 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
+import net.jcip.annotations.NotThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@NotThreadSafe
 class HeartbeatHandler extends IdleStateHandler {
 
   private static final Logger LOG = LoggerFactory.getLogger(HeartbeatHandler.class);
 
-  private final DriverConfigProfile defaultConfigProfile;
+  private final DriverExecutionProfile config;
 
   private HeartbeatRequest request;
 
-  HeartbeatHandler(DriverConfigProfile defaultConfigProfile) {
-    super(
-        (int)
-            defaultConfigProfile
-                .getDuration(CoreDriverOption.CONNECTION_HEARTBEAT_INTERVAL)
-                .getSeconds(),
-        0,
-        0);
-    this.defaultConfigProfile = defaultConfigProfile;
+  HeartbeatHandler(DriverExecutionProfile config) {
+    super((int) config.getDuration(DefaultDriverOption.HEARTBEAT_INTERVAL).getSeconds(), 0, 0);
+    this.config = config;
   }
 
   @Override
@@ -54,18 +50,13 @@ class HeartbeatHandler extends IdleStateHandler {
         LOG.warn(
             "Not sending heartbeat because a previous one is still in progress. "
                 + "Check that {} is not lower than {}.",
-            CoreDriverOption.CONNECTION_HEARTBEAT_INTERVAL.getPath(),
-            CoreDriverOption.CONNECTION_HEARTBEAT_TIMEOUT.getPath());
+            DefaultDriverOption.HEARTBEAT_INTERVAL.getPath(),
+            DefaultDriverOption.HEARTBEAT_TIMEOUT.getPath());
       } else {
         LOG.debug(
             "Connection was inactive for {} seconds, sending heartbeat",
-            defaultConfigProfile
-                .getDuration(CoreDriverOption.CONNECTION_HEARTBEAT_INTERVAL)
-                .getSeconds());
-        long timeoutMillis =
-            defaultConfigProfile
-                .getDuration(CoreDriverOption.CONNECTION_HEARTBEAT_TIMEOUT)
-                .toMillis();
+            config.getDuration(DefaultDriverOption.HEARTBEAT_INTERVAL).getSeconds());
+        long timeoutMillis = config.getDuration(DefaultDriverOption.HEARTBEAT_TIMEOUT).toMillis();
         this.request = new HeartbeatRequest(ctx, timeoutMillis);
         this.request.send();
       }
@@ -80,7 +71,7 @@ class HeartbeatHandler extends IdleStateHandler {
 
     @Override
     String describe() {
-      return "heartbeat";
+      return "Heartbeat request";
     }
 
     @Override

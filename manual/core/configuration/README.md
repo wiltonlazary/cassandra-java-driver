@@ -1,40 +1,46 @@
 ## Configuration
 
+### Quick overview
+
 The driver's configuration is composed of options, organized in a hierarchical manner. Optionally,
 it can define *profiles* that customize a set of options for a particular kind of request.
 
-The default implementation is based on the TypeSafe Config framework. It can be completely
-overridden if needed.
+* the default implementation is based on the Typesafe Config framework:
+  * the driver JAR comes with a [reference.conf] file that defines the defaults.
+  * you can add an `application.conf` file in the classpath (or an absolute path, or an URL). It
+    only needs to contain the options that you override.
+  * hot reloading is supported out of the box.
+* the config mechanism can be completely overridden by implementing a set of driver interfaces
+  ([DriverConfig], [DriverExecutionProfile] and [DriverConfigLoader])
 
-For a complete list of built-in options, see [reference.conf] in the driver sources.
-
+-----
 
 ### Concepts
 
 #### Options
 
 Essentially, an option is a path in the configuration with an expected type, for example
-`connection.heartbeat.interval`, representing a duration.
+`basic.request.timeout`, representing a duration.
 
-#### Profiles
+#### Execution profiles
 
 Imagine an application that does both transactional and analytical requests. Transactional requests
 are simpler and must return quickly, so they will typically use a short timeout, let's say 100 
 milliseconds; analytical requests are more complex and less frequent so a higher SLA is acceptable,
 for example 5 seconds. In addition, maybe you want to use a different consistency level.
 
-Instead of manually adjusting the options on every request, you can create configuration profiles:
+Instead of manually adjusting the options on every request, you can create execution profiles:
 
 ```
 datastax-java-driver {
   profiles {
     oltp {
-      request.timeout = 100 milliseconds
-      request.consistency = ONE
+      basic.request.timeout = 100 milliseconds
+      basic.request.consistency = ONE
     }
     olap {
-      request.timeout = 5 seconds
-      request.consistency = QUORUM
+      basic.request.timeout = 5 seconds
+      basic.request.consistency = QUORUM
     }
 }
 ```
@@ -44,7 +50,7 @@ Now each request only needs a profile name:
 ```java
 SimpleStatement s =
   SimpleStatement.builder("SELECT name FROM user WHERE id = 1")
-      .withConfigProfileName("oltp")
+      .setExecutionProfileName("oltp")
       .build();
 session.execute(s);
 ```
@@ -54,9 +60,9 @@ arbitrary number of named profiles. They inherit from the default profile, so yo
 override the options that have a different value.
 
 
-### Default implementation: TypeSafe Config
+### Default implementation: Typesafe Config
 
-Out of the box, the driver uses [TypeSafe Config]. 
+Out of the box, the driver uses [Typesafe Config]. 
 
 It looks at the following locations, according to the [standard behavior][config standard behavior]
 of that library:
@@ -70,16 +76,22 @@ of that library:
 The driver ships with a [reference.conf] that defines sensible defaults for all the options. That
 file is heavily documented, so refer to it for details about each option. It is included in the core
 driver JAR, so it is in your application's classpath. If you need to customize something, add an
-`application.conf` in your source tree and also place it in the classpath; since it inherits from
-`reference.conf`, you only need to redeclare what you override:
+`application.conf` to the classpath. There are various ways to do it:
+ 
+* place the file in a directory that is on your application or application server's classpath
+  ([example for Apache Tomcat](https://stackoverflow.com/questions/1300780/adding-a-directory-to-tomcat-classpath));
+* if you use Maven, place it in the `src/main/resources` directory.
+
+Since `application.conf` inherits from `reference.conf`, you only need to redeclare what you
+override:
 
 ```
 # Sample application.conf: overrides one option and adds a profile
 datastax-java-driver {
-  protocol.version = V4
+  advanced.protocol.version = V4
   profiles {
     slow {
-      request.timeout = 10 seconds
+      basic.request.timeout = 10 seconds
     }
   }
 }
@@ -94,7 +106,7 @@ changed at runtime and will be ignored). The reload interval is defined in the c
 
 ```
 # To disable periodic reloading, set this to 0.
-datastax-java-driver.config-reload-interval = 5 minutes
+datastax-java-driver.basic.config-reload-interval = 5 minutes
 ```
 
 As mentioned previously, system properties can also be used to override individual options. This is
@@ -102,7 +114,14 @@ great for temporary changes, for example in your development environment:
  
 ```
 # Increase heartbeat interval to limit the amount of debug logs:
-java -Ddatastax-java-driver.connection.heartbeat.interval="5 minutes" ...
+java -Ddatastax-java-driver.advanced.heartbeat.interval="5 minutes" ...
+```
+
+For array options, provide each element separately by appending an index to the path:
+
+```
+-Ddatastax-java-driver.basic.contact-points.0="127.0.0.1:9042"
+-Ddatastax-java-driver.basic.contact-points.1="127.0.0.2:9042"
 ```
 
 We recommend reserving system properties for the early phases of the project; in production, having
@@ -110,8 +129,48 @@ all the configuration in one place will make it easier to manage and review.
 
 As shown so far, all options live under a `datastax-java-driver` prefix. This can be changed, for
 example if you need multiple driver instances in the same VM with different configurations. See the
-[Advanced topics](changing-the-config-prefix) section.
+[Advanced topics](#changing-the-config-prefix) section.
 
+#### Alternate application config locations
+
+If loading `application.conf` from the classpath doesn't work for you, other loader implementations
+are available:
+
+* [DriverConfigLoader.fromClasspath]: still load from the classpath, but use a different resource
+  name. For example "config" will try to load `config.conf`, `config.json` or `config.properties`.
+* [DriverConfigLoader.fromFile]: load from a file on the local filesystem.
+* [DriverConfigLoader.fromUrl]: load from a URL.
+
+To use any of those loaders, pass it to the session builder:
+
+```java
+File file = new File("/path/to/application.conf");
+CqlSession session = CqlSession.builder()
+    .withConfigLoader(DriverConfigLoader.fromFile(file))
+    .build();
+```
+
+Apart from application-specific configuration, they work exactly like the default loader: they
+fall back to the driver's built-in `reference.conf` for defaults, accept overrides via system
+properties, and reload at the interval specified by the `basic.config-reload-interval` option. 
+
+#### Programmatic application config
+
+Alternatively, you can use [DriverConfigLoader.programmaticBuilder] to specify configuration options
+programmatically instead of loading them from a static resource:
+
+```java
+DriverConfigLoader loader =
+    DriverConfigLoader.programmaticBuilder()
+        .withDuration(DefaultDriverOption.REQUEST_TIMEOUT, Duration.ofSeconds(5))
+        .startProfile("slow")
+        .withDuration(DefaultDriverOption.REQUEST_TIMEOUT, Duration.ofSeconds(30))
+        .endProfile()
+        .build();
+CqlSession session = CqlSession.builder().withConfigLoader(loader).build();
+```
+
+This is useful for frameworks and tools that already have their own configuration mechanism.
 
 ### The configuration API
 
@@ -126,28 +185,46 @@ You don't need the configuration API for everyday usage of the driver, but it ca
 The driver's context exposes a [DriverConfig] instance:
 
 ```java
-DriverConfig config = cluster.getContext().config();
-DriverConfigProfile defaultProfile = config.getDefaultProfile();
-DriverConfigProfile olapProfile = config.getNamedProfile("olap");
+DriverConfig config = session.getContext().getConfig();
+DriverExecutionProfile defaultProfile = config.getDefaultProfile();
+DriverExecutionProfile olapProfile = config.getProfile("olap");
 
-// This method creates a defensive copy of the map, do not use in performance-sensitive code:
-config.getNamedProfiles().forEach((name, profile) -> ...);
+config.getProfiles().forEach((name, profile) -> ...);
 ```
 
-[DriverConfigProfile] has typed option getters:
+[DriverExecutionProfile] has typed option getters:
 
 ```java
-Duration requestTimeout = defaultProfile.getDuration(CoreDriverOption.REQUEST_TIMEOUT);
-int maxRequestsPerConnection = defaultProfile.getInt(CoreDriverOption.CONNECTION_MAX_REQUESTS);
+Duration requestTimeout = defaultProfile.getDuration(DefaultDriverOption.REQUEST_TIMEOUT);
+int maxRequestsPerConnection = defaultProfile.getInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS);
 ```
 
-Note that we use the [CoreDriverOption] enum to access built-in options, but the method takes a more
-generic [DriverOption] interface. This is intended to allow custom options, see the
-[Advanced topics](#custom-options) section.
+#### Manual reloading
+
+In addition to periodic reloading, you can trigger a reload programmatically. This returns a
+`CompletionStage` that you can use for example to register a callback when the reload is complete: 
+
+```java
+DriverConfigLoader loader = session.getContext().getConfigLoader();
+if (loader.supportsReloading()) {
+  CompletionStage<Boolean> reloaded = loader.reload();
+  reloaded.whenComplete(
+      (configChanged, error) -> {
+        if (error != null) {
+          // handle error
+        } else if (configChanged) {
+          // do something after the config change
+        }
+      });
+}
+```
+
+Manual reloading is optional, this can be checked with `supportsReloading()`; the driver's built-in
+loader supports it.
 
 #### Derived profiles
 
-Configuration profiles are hard-coded in the configuration, and can't be changed at runtime (except
+Execution profiles are hard-coded in the configuration, and can't be changed at runtime (except
 by modifying and reloading the files). What if you want to adjust an option for a single request,
 without having a dedicated profile for it?
 
@@ -155,13 +232,13 @@ To allow this, you start from an existing profile in the configuration and build
 that overrides a subset of options:
 
 ```java
-DriverConfigProfile defaultProfile = cluster.getContext().config().getDefaultProfile();
-DriverConfigProfile dynamicProfile =
-    defaultProfile.withConsistencyLevel(
-        CoreDriverOption.REQUEST_CONSISTENCY, ConsistencyLevel.EACH_QUORUM);
+DriverExecutionProfile defaultProfile = session.getContext().getConfig().getDefaultProfile();
+DriverExecutionProfile dynamicProfile =
+  defaultProfile.withString(
+      DefaultDriverOption.REQUEST_CONSISTENCY, DefaultConsistencyLevel.EACH_QUORUM.name());
 SimpleStatement s =
     SimpleStatement.builder("SELECT name FROM user WHERE id = 1")
-        .withConfigProfile(dynamicProfile)
+        .setExecutionProfile(dynamicProfile)
         .build();
 session.execute(s);
 ```
@@ -188,14 +265,14 @@ VM, but with different configurations. What you want instead is separate option 
 
 ```
 # application.conf
-cluster1 {
-  cluster-name = "cluster1"
-  protocol-version = V4
+session1 {
+  basic.session-name = "session1"
+  advanced.protocol-version = V4
   // etc.
 }
-cluster2 {
-  cluster-name = "cluster2"
-  protocol-version = V3
+session2 {
+  basic.session-name = "session2"
+  advanced.protocol-version = V3
   // etc.
 }
 ```
@@ -226,32 +303,31 @@ private static Config loadConfig(String prefix) {
 
 Next, create a `DriverConfigLoader`. This is the component that abstracts the configuration
 implementation to the rest of the driver. Here we use the built-in class, but tell it to load the
-TypeSafe Config object with the previous method:
+Typesafe Config object with the previous method:
 
 ```java
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfigLoader;
 import com.datastax.oss.driver.internal.core.config.typesafe.DefaultDriverConfigLoader;
 
-DriverConfigLoader cluster1ConfigLoader =
+DriverConfigLoader session1ConfigLoader =
     new DefaultDriverConfigLoader(
-        () -> loadConfig("cluster1"), CoreDriverOption.values());
+        () -> loadConfig("session1"), DefaultDriverOption.values());
 ```
 
 Finally, pass the config loader when building the driver:
 
 ```java
-Cluster cluster1 =
-    Cluster.builder()
-        .addContactPoint(new InetSocketAddress("127.0.0.1", 9042))
-        .withConfigLoader(cluster1ConfigLoader)
+CqlSession session1 =
+    CqlSession.builder()
+        .withConfigLoader(session1ConfigLoader)
         .build();
 ```
 
 #### Loading from a different source
 
-If you don't want to use a config file, you can write custom code to create the TypeSafe `Config`
-object (refer to the [documentation][TypeSafe Config] for more details).
+If you don't want to use a config file, you can write custom code to create the Typesafe `Config`
+object (refer to the [documentation][Typesafe Config] for more details).
 
 Then reuse the examples from the previous section to merge it with the driver's reference file, and
 pass it to the driver. Here's a contrived example that loads the configuration from a string:
@@ -266,61 +342,73 @@ DriverConfigLoader loader =
           Config application = ConfigFactory.parseString(configSource);
           return application.withFallback(reference);
         },
-        CoreDriverOption.values());
+        DefaultDriverOption.values());
 
-Cluster cluster =
-    Cluster.builder()
-        .addContactPoint(new InetSocketAddress("127.0.0.1", 9042))
-        .withConfigLoader(loader)
-        .build();
+CqlSession session = CqlSession.builder().withConfigLoader(loader).build();
 ```
 
-#### Bypassing TypeSafe Config
+#### Bypassing Typesafe Config
 
-If TypeSafe Config doesn't work for you, it is possible to get rid of it entirely.
+If Typesafe Config doesn't work for you, it is possible to get rid of it entirely.
 
-You will need to provide your own implementations of [DriverConfig] and [DriverConfigProfile]. Then
-write a [DriverConfigLoader] and pass it to the cluster at initialization, as shown in the previous
-sections. Study the built-in implementation (package 
+Start by excluding Typesafe Config from the list of dependencies required by the driver; if you are 
+using Maven, this can be achieved as follows:
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>com.datastax.oss</groupId>
+        <artifactId>java-driver-core</artifactId>
+        <version>...</version>
+        <exclusions>
+            <exclusion>
+                <groupId>com.typesafe</groupId>
+                <artifactId>config</artifactId>
+            </exclusion>
+        </exclusions>
+    </dependency>
+</dependencies>
+
+```
+Next, you will need to provide your own implementations of [DriverConfig] and 
+[DriverExecutionProfile]. Then write a [DriverConfigLoader] and pass it to the session at 
+initialization, as shown in the previous sections. Study the built-in implementation (package
 `com.datastax.oss.driver.internal.core.config.typesafe`) for reference.
 
 Reloading is not mandatory: you can choose not to implement it, and the driver will simply keep
 using the initial configuration.
 
-Note that the option getters (`DriverConfigProfile.getInt` and similar) are invoked very frequently
-on the hot code path; if your implementation is slow, consider caching the results between reloads.
+Note that the option getters (`DriverExecutionProfile.getInt` and similar) are invoked very
+frequently on the hot code path; if your implementation is slow, consider caching the results
+between reloads.
 
-#### Configuration change events
+#### Configuration change event
 
-You can force an immediate reload instead of waiting for the next interval:
+If you're writing your own policies, you might want them to be reactive to configuration changes.
+You can register a callback to `ConfigChangeEvent`, which gets emitted any time a manual or periodic
+reload detects changes since the last reload:
 
 ```java
-import com.datastax.oss.driver.internal.core.config.ForceReloadConfigEvent;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
-
-// DANGER ZONE: this gives you access to the driver internals, which allow very nasty things.
-// Use responsibly.
-InternalDriverContext context = (InternalDriverContext) cluster.getContext();
-
-EventBus eventBus = context.eventBus();
-eventBus.fire(ForceReloadConfigEvent.INSTANCE);
-```
-
-An event is also fired when we detect that the configuration changed after a reload. You can
-register a callback to listen to it: 
-
-```java
 import com.datastax.oss.driver.internal.core.config.ConfigChangeEvent;
+
+InternalDriverContext context = (InternalDriverContext) session.getContext();
 
 Object key =
     eventBus.register(
-        ConfigChangeEvent.class, (e) -> System.out.println("The configuration changed"));
+        ConfigChangeEvent.class, (e) -> {
+          System.out.println("The configuration changed");
+          // re-read the config option(s) you're interested in, and apply changes if needed
+        });
 
 // If your component has a shorter lifecycle than the driver, make sure to unregister when it closes
 eventBus.unregister(key, ConfigChangeEvent.class);
 ```
 
-Both events are managed by the config loader. If you write a custom loader, study the source of
+For example, the driver uses this mechanism internally to resize connection pools if you change the
+options in `advanced.connection.pool`.
+
+The event is emitted by the config loader. If you write a custom loader, study the source of
 `DefaultDriverConfigLoader` to reproduce the behavior.
 
 #### Policies
@@ -329,25 +417,34 @@ The preferred way to instantiate policies (load balancing policy, retry policy, 
 configuration:
 
 ```
-reconnection-policy {
-  class = com.datastax.oss.driver.api.core.connection.ExponentialReconnectionPolicy
-  base-delay = 1 second
-  max-delay = 60 seconds
+datastax-java-driver {
+  basic.load-balancing-policy.class = DefaultLoadBalancingPolicy
+  advanced.reconnection-policy {
+    class = ExponentialReconnectionPolicy
+    base-delay = 1 second
+    max-delay = 60 seconds
+  }
 }
 ```
 
-When the driver encounters such a declaration, it will load the class and look for a constructor
-with the following signature:
+When the driver encounters such a declaration, it will load the class and use reflection to invoke a
+constructor with the following signature:
 
-```java
-ExponentialReconnectionPolicy(DriverContext context, DriverOption configRoot)
-```
+* for policies that can be overridden in a profile (load balancing policy, retry policy, speculative
+  execution policy):
+  
+    ```java
+    public DefaultLoadBalancingPolicy(DriverContext context, String profileName)
+    ```
 
-* `context` argument allows the policy to access other driver components (for example the
-  configuration);
-* `configRoot` represents the root of the configuration element (`reconnection-policy` in the 
-  example above), and can be used to build the path of the other options, in particular for nestable
-  policies that can appear at arbitrary paths in the configuration tree.
+* for session-wide policies (all the others):
+
+    ```java
+    public ExponentialReconnectionPolicy(DriverContext context)
+    ```
+
+Where [DriverContext] is the object returned by `session.getContext()`, which allows the policy to
+access other driver components (for example the configuration).
  
 If you write custom policy implementations, you should follow that same pattern; it provides an
 elegant way to switch policies without having to recompile the application (if your policy needs
@@ -372,54 +469,35 @@ public class MyDriverContext extends DefaultDriverContext {
 }
 ```
 
-Then you'll need to pass an instance of this context to `DefaultCluster.init`. You can either do so
-directly, or subclass `ClusterBuilder` and override the `buildAsync` method. 
+Then you'll need to pass an instance of this context to `DefaultSession.init`. You can either do so
+directly, or subclass `SessionBuilder` and override the `buildContext` method. 
 
 #### Custom options
 
 You can add your own options to the configuration. This is useful for custom components, or even as
-a way to associate arbitrary key/value pairs with the cluster instance.
+a way to associate arbitrary key/value pairs with the session instance.
 
 First, write an enum that implements [DriverOption]:
 
 ```java
 public enum MyCustomOption implements DriverOption {
 
-  ADMIN_NAME("admin.name", true),
-  ADMIN_EMAIL("admin.email", true),
-  AWESOMENESS_FACTOR("awesomeness-factor", true),
+  ADMIN_NAME("admin.name"),
+  ADMIN_EMAIL("admin.email"),
+  AWESOMENESS_FACTOR("awesomeness-factor"),
   ;
 
   private final String path;
-  private final boolean required;
 
-  MyCustomOption(String path, boolean required) {
+  MyCustomOption(String path) {
     this.path = path;
-    this.required = required;
   }
 
   @Override
   public String getPath() {
     return path;
   }
-
-  @Override
-  public boolean required() {
-    return required;
-  }
 }
-```
-
-Pass the options to the config loader:
-
-```java
-Cluster cluster = Cluster.builder()
-    .addContactPoint(new InetSocketAddress("127.0.0.1", 9042))
-    .withConfigLoader(new DefaultDriverConfigLoader(
-        DefaultDriverConfigLoader.DEFAULT_CONFIG_SUPPLIER,
-        CoreDriverOption.values(), // don't forget to keep the core options
-        MyCustomOption.values()))
-    .build();
 ```
 
 You can now add the options to your configuration:
@@ -437,19 +515,24 @@ datastax-java-driver {
 And access them from the code:
 
 ```java
-DriverConfig config = cluster.getContext().config();
+DriverConfig config = session.getContext().getConfig();
 config.getDefaultProfile().getString(MyCustomOption.ADMIN_EMAIL);
 config.getDefaultProfile().getInt(MyCustomOption.AWESOMENESS_FACTOR);
 ```
 
-[DriverConfig]:        http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/config/DriverConfig.html
-[DriverConfigProfile]: http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/config/DriverConfigProfile.html
-[DriverOption]:        http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/config/DriverOption.html
-[CoreDriverOption]:    http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/config/CoreDriverOption.html
-[DriverConfigLoader]:  http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html
+[DriverConfig]:                           https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfig.html
+[DriverExecutionProfile]:                 https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverExecutionProfile.html
+[DriverContext]:                          https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/context/DriverContext.html
+[DriverOption]:                           https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverOption.html
+[DefaultDriverOption]:                    https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DefaultDriverOption.html
+[DriverConfigLoader]:                     https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html
+[DriverConfigLoader.fromClasspath]:       https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html#fromClasspath-java.lang.String-
+[DriverConfigLoader.fromFile]:            https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html#fromFile-java.io.File-
+[DriverConfigLoader.fromUrl]:             https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html#fromUrl-java.net.URL-
+[DriverConfigLoader.programmaticBuilder]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/config/DriverConfigLoader.html#programmaticBuilder--
 
-[TypeSafe Config]: https://github.com/typesafehub/config
+[Typesafe Config]: https://github.com/typesafehub/config
 [config standard behavior]: https://github.com/typesafehub/config#standard-behavior
-[reference.conf]: https://github.com/datastax/java-driver/blob/4.x/core/src/main/resources/reference.conf
+[reference.conf]: reference/
 [HOCON]: https://github.com/typesafehub/config/blob/master/HOCON.md
 [API conventions]: ../../api_conventions

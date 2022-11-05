@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ public @interface CassandraRequirement {
 
   /**
    * @return the maximum exclusive version allowed to execute this test, i.e. "2.2" means only tests
-   *     < "2.2" may execute this test.
+   *     &lt; "2.2" may execute this test.
    */
   String max() default "";
 

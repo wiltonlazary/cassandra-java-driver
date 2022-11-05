@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,83 +15,154 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.datastax.oss.driver.api.core.CassandraVersion;
+import com.datastax.oss.driver.api.core.Version;
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.metadata.NodeState;
-import java.net.InetAddress;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metrics.NodeMetricUpdater;
+import com.datastax.oss.driver.internal.core.metrics.NoopNodeMetricUpdater;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
+import java.io.Serializable;
 import java.net.InetSocketAddress;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import net.jcip.annotations.ThreadSafe;
 
 /**
  * Implementation note: all the mutable state in this class is read concurrently, but only mutated
  * from {@link MetadataManager}'s admin thread.
  */
-public class DefaultNode implements Node {
+@ThreadSafe
+public class DefaultNode implements Node, Serializable {
 
-  private final InetSocketAddress connectAddress;
+  private static final long serialVersionUID = 1;
 
-  volatile Optional<InetAddress> broadcastAddress;
-  volatile Optional<InetAddress> listenAddress;
+  private volatile EndPoint endPoint;
+  // A deserialized node is not attached to a session anymore, so we don't need to retain this
+  private transient volatile NodeMetricUpdater metricUpdater;
+
+  volatile InetSocketAddress broadcastRpcAddress;
+  volatile InetSocketAddress broadcastAddress;
+  volatile InetSocketAddress listenAddress;
   volatile String datacenter;
   volatile String rack;
-  volatile CassandraVersion cassandraVersion;
+  volatile Version cassandraVersion;
+  // Keep a copy of the raw tokens, to detect if they have changed when we refresh the node
+  volatile Set<String> rawTokens;
   volatile Map<String, Object> extras;
+  volatile UUID hostId;
+  volatile UUID schemaVersion;
 
-  // These 3 fields are read concurrently, but only mutated on NodeStateManager's admin thread
+  // These 4 fields are read concurrently, but only mutated on NodeStateManager's admin thread
   volatile NodeState state;
   volatile int openConnections;
   volatile int reconnections;
+  volatile long upSinceMillis;
 
   volatile NodeDistance distance;
 
-  public DefaultNode(InetSocketAddress connectAddress) {
-    this.connectAddress = connectAddress;
+  public DefaultNode(EndPoint endPoint, InternalDriverContext context) {
+    this.endPoint = endPoint;
     this.state = NodeState.UNKNOWN;
     this.distance = NodeDistance.IGNORED;
+    this.rawTokens = Collections.emptySet();
+    this.extras = Collections.emptyMap();
+    // We leak a reference to a partially constructed object (this), but in practice this won't be a
+    // problem because the node updater only needs the connect address to initialize.
+    this.metricUpdater = context.getMetricsFactory().newNodeUpdater(this);
+    this.upSinceMillis = -1;
   }
 
+  @NonNull
   @Override
-  public InetSocketAddress getConnectAddress() {
-    return connectAddress;
+  public EndPoint getEndPoint() {
+    return endPoint;
   }
 
+  public void setEndPoint(@NonNull EndPoint newEndPoint, @NonNull InternalDriverContext context) {
+    if (!newEndPoint.equals(endPoint)) {
+      endPoint = newEndPoint;
+
+      // The endpoint is also used to build metric names, so make sure they get updated
+      NodeMetricUpdater previousMetricUpdater = metricUpdater;
+      if (!(previousMetricUpdater instanceof NoopNodeMetricUpdater)) {
+        metricUpdater = context.getMetricsFactory().newNodeUpdater(this);
+      }
+    }
+  }
+
+  @NonNull
   @Override
-  public Optional<InetAddress> getBroadcastAddress() {
-    return broadcastAddress;
+  public Optional<InetSocketAddress> getBroadcastRpcAddress() {
+    return Optional.ofNullable(broadcastRpcAddress);
   }
 
+  @NonNull
   @Override
-  public Optional<InetAddress> getListenAddress() {
-    return listenAddress;
+  public Optional<InetSocketAddress> getBroadcastAddress() {
+    return Optional.ofNullable(broadcastAddress);
   }
 
+  @NonNull
+  @Override
+  public Optional<InetSocketAddress> getListenAddress() {
+    return Optional.ofNullable(listenAddress);
+  }
+
+  @Nullable
   @Override
   public String getDatacenter() {
     return datacenter;
   }
 
+  @Nullable
   @Override
   public String getRack() {
     return rack;
   }
 
+  @Nullable
   @Override
-  public CassandraVersion getCassandraVersion() {
+  public Version getCassandraVersion() {
     return cassandraVersion;
   }
 
+  @Nullable
+  @Override
+  public UUID getHostId() {
+    return hostId;
+  }
+
+  @Nullable
+  @Override
+  public UUID getSchemaVersion() {
+    return schemaVersion;
+  }
+
+  @NonNull
   @Override
   public Map<String, Object> getExtras() {
     return extras;
   }
 
+  @NonNull
   @Override
   public NodeState getState() {
     return state;
   }
 
+  @Override
+  public long getUpSinceMillis() {
+    return upSinceMillis;
+  }
+
+  @Override
   public int getOpenConnections() {
     return openConnections;
   }
@@ -101,30 +172,25 @@ public class DefaultNode implements Node {
     return reconnections > 0;
   }
 
+  @NonNull
   @Override
   public NodeDistance getDistance() {
     return distance;
   }
 
-  @Override
-  public boolean equals(Object other) {
-    if (other == this) {
-      return true;
-    } else if (other instanceof Node) {
-      Node that = (Node) other;
-      return this.connectAddress.equals(that.getConnectAddress());
-    } else {
-      return false;
-    }
-  }
-
-  @Override
-  public int hashCode() {
-    return connectAddress.hashCode();
+  public NodeMetricUpdater getMetricUpdater() {
+    return metricUpdater;
   }
 
   @Override
   public String toString() {
-    return connectAddress.toString();
+    // Include the hash code because this class uses reference equality
+    return String.format(
+        "Node(endPoint=%s, hostId=%s, hashCode=%x)", getEndPoint(), getHostId(), hashCode());
+  }
+
+  /** Note: deliberately not exposed by the public interface. */
+  public Set<String> getRawTokens() {
+    return rawTokens;
   }
 }

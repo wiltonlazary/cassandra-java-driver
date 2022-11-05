@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,17 @@ package com.datastax.oss.driver.internal.core.channel;
 
 import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.ProtocolVersion;
+import com.datastax.oss.driver.api.core.connection.BusyConnectionException;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.internal.core.adminrequest.AdminRequestHandler;
+import com.datastax.oss.driver.internal.core.adminrequest.ThrottledAdminRequestHandler;
+import com.datastax.oss.driver.internal.core.pool.ChannelPool;
+import com.datastax.oss.driver.internal.core.session.DefaultSession;
+import com.datastax.oss.driver.internal.core.util.concurrent.UncaughtExceptions;
 import com.datastax.oss.protocol.internal.Message;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.EventLoop;
 import io.netty.util.AttributeKey;
@@ -26,15 +35,21 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import net.jcip.annotations.ThreadSafe;
 
 /**
  * A thin wrapper around a Netty {@link Channel}, to send requests to a Cassandra node and receive
  * responses.
  */
+@ThreadSafe
 public class DriverChannel {
+
   static final AttributeKey<String> CLUSTER_NAME_KEY = AttributeKey.newInstance("cluster_name");
+  static final AttributeKey<Map<String, List<String>>> OPTIONS_KEY =
+      AttributeKey.newInstance("options");
 
   @SuppressWarnings("RedundantStringConstructorCall")
   static final Object GRACEFUL_CLOSE_MESSAGE = new String("GRACEFUL_CLOSE_MESSAGE");
@@ -42,23 +57,23 @@ public class DriverChannel {
   @SuppressWarnings("RedundantStringConstructorCall")
   static final Object FORCEFUL_CLOSE_MESSAGE = new String("FORCEFUL_CLOSE_MESSAGE");
 
+  private final EndPoint endPoint;
   private final Channel channel;
-  private final ChannelFuture closeStartedFuture;
+  private final InFlightHandler inFlightHandler;
   private final WriteCoalescer writeCoalescer;
-  private final AvailableIdsHolder availableIdsHolder;
   private final ProtocolVersion protocolVersion;
   private final AtomicBoolean closing = new AtomicBoolean();
   private final AtomicBoolean forceClosing = new AtomicBoolean();
 
   DriverChannel(
+      EndPoint endPoint,
       Channel channel,
       WriteCoalescer writeCoalescer,
-      AvailableIdsHolder availableIdsHolder,
       ProtocolVersion protocolVersion) {
+    this.endPoint = endPoint;
     this.channel = channel;
-    this.closeStartedFuture = channel.pipeline().get(InFlightHandler.class).closeStartedFuture;
+    this.inFlightHandler = channel.pipeline().get(InFlightHandler.class);
     this.writeCoalescer = writeCoalescer;
-    this.availableIdsHolder = availableIdsHolder;
     this.protocolVersion = protocolVersion;
   }
 
@@ -72,7 +87,7 @@ public class DriverChannel {
       Map<String, ByteBuffer> customPayload,
       ResponseCallback responseCallback) {
     if (closing.get()) {
-      throw new IllegalStateException("Driver channel is closing");
+      return channel.newFailedFuture(new IllegalStateException("Driver channel is closing"));
     }
     RequestMessage message = new RequestMessage(request, tracing, customPayload, responseCallback);
     return writeCoalescer.writeAndFlush(channel, message);
@@ -88,17 +103,7 @@ public class DriverChannel {
   public void cancel(ResponseCallback responseCallback) {
     // To avoid creating an extra message, we adopt the convention that writing the callback
     // directly means cancellation
-    writeCoalescer.writeAndFlush(channel, responseCallback);
-  }
-
-  /**
-   * Releases a stream id if the client was holding onto it, and has now determined that it can be
-   * safely reused.
-   *
-   * @see ResponseCallback#holdStreamId()
-   */
-  public void release(int streamId) {
-    channel.pipeline().fireUserEventTriggered(new ReleaseEvent(streamId));
+    writeCoalescer.writeAndFlush(channel, responseCallback).addListener(UncaughtExceptions::log);
   }
 
   /**
@@ -125,13 +130,67 @@ public class DriverChannel {
     return channel.attr(CLUSTER_NAME_KEY).get();
   }
 
+  public Map<String, List<String>> getOptions() {
+    return channel.attr(OPTIONS_KEY).get();
+  }
+
   /**
-   * @return the number of available stream ids on the channel. This is used to weigh channels in
-   *     the pool. Note that for performance reasons this is only maintained if the channel is part
-   *     of a pool that has a size bigger than 1, otherwise it will always return -1.
+   * @return the number of available stream ids on the channel; more precisely, this is the number
+   *     of {@link #preAcquireId()} calls for which the id has not been released yet. This is used
+   *     to weigh channels in pools that have a size bigger than 1, in the load balancing policy,
+   *     and for monitoring purposes.
    */
-  public int availableIds() {
-    return (availableIdsHolder == null) ? -1 : availableIdsHolder.value;
+  public int getAvailableIds() {
+    return inFlightHandler.getAvailableIds();
+  }
+
+  /**
+   * Indicates the intention to send a request using this channel.
+   *
+   * <p>There must be <b>exactly one</b> invocation of this method before each call to {@link
+   * #write(Message, boolean, Map, ResponseCallback)}. If this method returns true, the client
+   * <b>must</b> proceed with the write. If it returns false, it <b>must not</b> proceed.
+   *
+   * <p>This method is used together with {@link #getAvailableIds()} to track how many requests are
+   * currently executing on the channel, and avoid submitting a request that would result in a
+   * {@link BusyConnectionException}. The two methods follow atomic semantics: {@link
+   * #getAvailableIds()} returns the exact count of clients that have called {@link #preAcquireId()}
+   * and not yet released their stream id at this point in time.
+   *
+   * <p>Most of the time, the driver code calls this method automatically:
+   *
+   * <ul>
+   *   <li>if you obtained the channel from a pool ({@link ChannelPool#next()} or {@link
+   *       DefaultSession#getChannel(Node, String)}), <b>do not call</b> this method: it has already
+   *       been done as part of selecting the channel.
+   *   <li>if you use {@link ChannelHandlerRequest} or {@link AdminRequestHandler} for internal
+   *       queries, <b>do not call</b> this method, those classes already do it.
+   *   <li>however, if you use {@link ThrottledAdminRequestHandler}, you must specify a {@code
+   *       shouldPreAcquireId} argument to indicate whether to call this method or not. This is
+   *       because those requests are sometimes used with a channel that comes from a pool
+   *       (requiring {@code shouldPreAcquireId = false}), or sometimes with a standalone channel
+   *       like in the control connection (requiring {@code shouldPreAcquireId = true}).
+   * </ul>
+   */
+  public boolean preAcquireId() {
+    return inFlightHandler.preAcquireId();
+  }
+
+  /**
+   * @return the number of requests currently executing on this channel (including {@link
+   *     #getOrphanedIds() orphaned ids}).
+   */
+  public int getInFlight() {
+    return inFlightHandler.getInFlight();
+  }
+
+  /**
+   * @return the number of stream ids for requests that have either timed out or been cancelled, but
+   *     for which we can't release the stream id because a request might still come from the
+   *     server.
+   */
+  public int getOrphanedIds() {
+    return inFlightHandler.getOrphanIds();
   }
 
   public EventLoop eventLoop() {
@@ -142,12 +201,18 @@ public class DriverChannel {
     return protocolVersion;
   }
 
-  public SocketAddress remoteAddress() {
-    return channel.remoteAddress();
+  /** The endpoint that was used to establish the connection. */
+  public EndPoint getEndPoint() {
+    return endPoint;
   }
 
   public SocketAddress localAddress() {
     return channel.localAddress();
+  }
+
+  /** @return The {@link ChannelConfig configuration} of this channel. */
+  public ChannelConfig config() {
+    return channel.config();
   }
 
   /**
@@ -155,10 +220,12 @@ public class DriverChannel {
    * be allowed to complete before the underlying channel is closed.
    */
   public Future<Void> close() {
-    if (closing.compareAndSet(false, true)) {
+    if (closing.compareAndSet(false, true) && channel.isOpen()) {
       // go through the coalescer: this guarantees that we won't reject writes that were submitted
       // before, but had not been coalesced yet.
-      writeCoalescer.writeAndFlush(channel, GRACEFUL_CLOSE_MESSAGE);
+      writeCoalescer
+          .writeAndFlush(channel, GRACEFUL_CLOSE_MESSAGE)
+          .addListener(UncaughtExceptions::log);
     }
     return channel.closeFuture();
   }
@@ -169,8 +236,10 @@ public class DriverChannel {
    */
   public Future<Void> forceClose() {
     this.close();
-    if (forceClosing.compareAndSet(false, true)) {
-      writeCoalescer.writeAndFlush(channel, FORCEFUL_CLOSE_MESSAGE);
+    if (forceClosing.compareAndSet(false, true) && channel.isOpen()) {
+      writeCoalescer
+          .writeAndFlush(channel, FORCEFUL_CLOSE_MESSAGE)
+          .addListener(UncaughtExceptions::log);
     }
     return channel.closeFuture();
   }
@@ -186,7 +255,7 @@ public class DriverChannel {
    * #forceClose()} is called first, this future will never complete.
    */
   public ChannelFuture closeStartedFuture() {
-    return this.closeStartedFuture;
+    return this.inFlightHandler.closeStartedFuture;
   }
 
   /**
@@ -219,14 +288,6 @@ public class DriverChannel {
       this.tracing = tracing;
       this.customPayload = customPayload;
       this.responseCallback = responseCallback;
-    }
-  }
-
-  static class ReleaseEvent {
-    final int streamId;
-
-    ReleaseEvent(int streamId) {
-      this.streamId = streamId;
     }
   }
 

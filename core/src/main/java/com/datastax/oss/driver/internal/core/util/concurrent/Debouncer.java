@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,8 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.time.Duration;
@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import net.jcip.annotations.NotThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -36,19 +37,21 @@ import org.slf4j.LoggerFactory;
  * window is reset, and the next flush will now contain both events. If the window keeps getting
  * reset, the debouncer will flush after a given number of accumulated events.
  *
- * @param <T> the type of event.
- * @param <R> the resulting type after the events of a batch have been coalesced.
+ * @param <IncomingT> the type of the incoming events.
+ * @param <CoalescedT> the resulting type after the events of a batch have been coalesced.
  */
-public class Debouncer<T, R> {
+@NotThreadSafe // must be confined to adminExecutor
+public class Debouncer<IncomingT, CoalescedT> {
   private static final Logger LOG = LoggerFactory.getLogger(Debouncer.class);
 
+  private final String logPrefix;
   private final EventExecutor adminExecutor;
-  private final Consumer<R> onFlush;
+  private final Consumer<CoalescedT> onFlush;
   private final Duration window;
   private final long maxEvents;
-  private final Function<List<T>, R> coalescer;
+  private final Function<List<IncomingT>, CoalescedT> coalescer;
 
-  private List<T> currentBatch = new ArrayList<>();
+  private List<IncomingT> currentBatch = new ArrayList<>();
   private ScheduledFuture<?> nextFlush;
   private boolean stopped;
 
@@ -63,10 +66,31 @@ public class Debouncer<T, R> {
    */
   public Debouncer(
       EventExecutor adminExecutor,
-      Function<List<T>, R> coalescer,
-      Consumer<R> onFlush,
+      Function<List<IncomingT>, CoalescedT> coalescer,
+      Consumer<CoalescedT> onFlush,
       Duration window,
       long maxEvents) {
+    this("debouncer", adminExecutor, coalescer, onFlush, window, maxEvents);
+  }
+
+  /**
+   * Creates a new instance.
+   *
+   * @param logPrefix the log prefix to use in log messages.
+   * @param adminExecutor the executor that will be used to schedule all tasks.
+   * @param coalescer how to transform a batch of events into a result.
+   * @param onFlush what to do with a result.
+   * @param window the time window.
+   * @param maxEvents the maximum number of accumulated events before a flush is forced.
+   */
+  public Debouncer(
+      String logPrefix,
+      EventExecutor adminExecutor,
+      Function<List<IncomingT>, CoalescedT> coalescer,
+      Consumer<CoalescedT> onFlush,
+      Duration window,
+      long maxEvents) {
+    this.logPrefix = logPrefix;
     this.coalescer = coalescer;
     Preconditions.checkArgument(maxEvents >= 1, "maxEvents should be at least 1");
     this.adminExecutor = adminExecutor;
@@ -76,14 +100,15 @@ public class Debouncer<T, R> {
   }
 
   /** This must be called on eventExecutor too. */
-  public void receive(T element) {
+  public void receive(IncomingT element) {
     assert adminExecutor.inEventLoop();
     if (stopped) {
       return;
     }
     if (window.isZero() || maxEvents == 1) {
       LOG.debug(
-          "Received {}, flushing immediately (window = {}, maxEvents = {})",
+          "[{}] Received {}, flushing immediately (window = {}, maxEvents = {})",
+          logPrefix,
           element,
           window,
           maxEvents);
@@ -92,23 +117,26 @@ public class Debouncer<T, R> {
       currentBatch.add(element);
       if (currentBatch.size() == maxEvents) {
         LOG.debug(
-            "Received {}, flushing immediately (because {} accumulated events)",
+            "[{}] Received {}, flushing immediately (because {} accumulated events)",
+            logPrefix,
             element,
             maxEvents);
         flushNow();
       } else {
-        LOG.debug("Received {}, scheduling next flush in {}", element, window);
+        LOG.debug("[{}] Received {}, scheduling next flush in {}", logPrefix, element, window);
         scheduleFlush();
       }
     }
   }
 
-  private void flushNow() {
+  public void flushNow() {
     assert adminExecutor.inEventLoop();
-    LOG.debug("Flushing now");
+    LOG.debug("[{}] Flushing now", logPrefix);
     cancelNextFlush();
-    onFlush.accept(coalescer.apply(currentBatch));
-    currentBatch = new ArrayList<>();
+    if (!currentBatch.isEmpty()) {
+      onFlush.accept(coalescer.apply(currentBatch));
+      currentBatch = new ArrayList<>();
+    }
   }
 
   private void scheduleFlush() {
@@ -123,7 +151,7 @@ public class Debouncer<T, R> {
     if (nextFlush != null && !nextFlush.isDone()) {
       boolean cancelled = nextFlush.cancel(true);
       if (cancelled) {
-        LOG.debug("Cancelled existing scheduled flush");
+        LOG.debug("[{}] Cancelled existing scheduled flush", logPrefix);
       }
     }
   }

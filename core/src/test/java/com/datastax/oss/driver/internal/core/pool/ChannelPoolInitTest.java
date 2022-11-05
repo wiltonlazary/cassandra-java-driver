@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,18 @@
  */
 package com.datastax.oss.driver.internal.core.pool;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.InvalidKeyspaceException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
+import com.datastax.oss.driver.api.core.metrics.DefaultNodeMetric;
 import com.datastax.oss.driver.internal.core.channel.ChannelEvent;
 import com.datastax.oss.driver.internal.core.channel.ClusterNameMismatchException;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
@@ -28,113 +37,115 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.junit.Test;
 import org.mockito.InOrder;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 
 public class ChannelPoolInitTest extends ChannelPoolTestBase {
 
   @Test
   public void should_initialize_when_all_channels_succeed() throws Exception {
-    Mockito.when(defaultProfile.getInt(CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
 
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     DriverChannel channel3 = newMockDriverChannel(3);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS, channel1)
-            .success(ADDRESS, channel2)
-            .success(ADDRESS, channel3)
+            .success(node, channel1)
+            .success(node, channel2)
+            .success(node, channel3)
             .build();
 
     CompletionStage<ChannelPool> poolFuture =
-        ChannelPool.init(NODE, null, NodeDistance.LOCAL, context, "test");
+        ChannelPool.init(node, null, NodeDistance.LOCAL, context, "test");
 
-    factoryHelper.waitForCalls(ADDRESS, 3);
-    waitForPendingAdminTasks();
+    factoryHelper.waitForCalls(node, 3);
 
-    assertThat(poolFuture)
+    assertThatStage(poolFuture)
         .isSuccess(pool -> assertThat(pool.channels).containsOnly(channel1, channel2, channel3));
-    Mockito.verify(eventBus, times(3)).fire(ChannelEvent.channelOpened(NODE));
+    verify(eventBus, VERIFY_TIMEOUT.times(3)).fire(ChannelEvent.channelOpened(node));
 
     factoryHelper.verifyNoMoreCalls();
   }
 
   @Test
   public void should_initialize_when_all_channels_fail() throws Exception {
-    Mockito.when(defaultProfile.getInt(CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
 
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .failure(ADDRESS, "mock channel init failure")
-            .failure(ADDRESS, "mock channel init failure")
-            .failure(ADDRESS, "mock channel init failure")
+            .failure(node, "mock channel init failure")
+            .failure(node, "mock channel init failure")
+            .failure(node, "mock channel init failure")
             .build();
 
     CompletionStage<ChannelPool> poolFuture =
-        ChannelPool.init(NODE, null, NodeDistance.LOCAL, context, "test");
+        ChannelPool.init(node, null, NodeDistance.LOCAL, context, "test");
 
-    factoryHelper.waitForCalls(ADDRESS, 3);
-    waitForPendingAdminTasks();
+    factoryHelper.waitForCalls(node, 3);
 
-    assertThat(poolFuture).isSuccess(pool -> assertThat(pool.channels).isEmpty());
-    Mockito.verify(eventBus, never()).fire(ChannelEvent.channelOpened(NODE));
+    assertThatStage(poolFuture).isSuccess(pool -> assertThat(pool.channels).isEmpty());
+    verify(eventBus, never()).fire(ChannelEvent.channelOpened(node));
+    verify(nodeMetricUpdater, VERIFY_TIMEOUT.times(3))
+        .incrementCounter(DefaultNodeMetric.CONNECTION_INIT_ERRORS, null);
 
     factoryHelper.verifyNoMoreCalls();
   }
 
   @Test
   public void should_indicate_when_keyspace_failed_on_all_channels() {
-    Mockito.when(defaultProfile.getInt(CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
 
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .failure(ADDRESS, new InvalidKeyspaceException("invalid keyspace"))
-            .failure(ADDRESS, new InvalidKeyspaceException("invalid keyspace"))
-            .failure(ADDRESS, new InvalidKeyspaceException("invalid keyspace"))
+            .failure(node, new InvalidKeyspaceException("invalid keyspace"))
+            .failure(node, new InvalidKeyspaceException("invalid keyspace"))
+            .failure(node, new InvalidKeyspaceException("invalid keyspace"))
             .build();
 
     CompletionStage<ChannelPool> poolFuture =
-        ChannelPool.init(NODE, null, NodeDistance.LOCAL, context, "test");
+        ChannelPool.init(node, null, NodeDistance.LOCAL, context, "test");
 
-    factoryHelper.waitForCalls(ADDRESS, 3);
-    waitForPendingAdminTasks();
-    assertThat(poolFuture).isSuccess(pool -> assertThat(pool.isInvalidKeyspace()).isTrue());
+    factoryHelper.waitForCalls(node, 3);
+    assertThatStage(poolFuture)
+        .isSuccess(
+            pool -> {
+              assertThat(pool.isInvalidKeyspace()).isTrue();
+              verify(nodeMetricUpdater, VERIFY_TIMEOUT.times(3))
+                  .incrementCounter(DefaultNodeMetric.CONNECTION_INIT_ERRORS, null);
+            });
   }
 
   @Test
   public void should_fire_force_down_event_when_cluster_name_does_not_match() throws Exception {
-    Mockito.when(defaultProfile.getInt(CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(3);
 
     ClusterNameMismatchException error =
-        new ClusterNameMismatchException(ADDRESS, "actual", "expected");
+        new ClusterNameMismatchException(node.getEndPoint(), "actual", "expected");
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .failure(ADDRESS, error)
-            .failure(ADDRESS, error)
-            .failure(ADDRESS, error)
+            .failure(node, error)
+            .failure(node, error)
+            .failure(node, error)
             .build();
 
-    ChannelPool.init(NODE, null, NodeDistance.LOCAL, context, "test");
+    ChannelPool.init(node, null, NodeDistance.LOCAL, context, "test");
 
-    factoryHelper.waitForCalls(ADDRESS, 3);
-    waitForPendingAdminTasks();
+    factoryHelper.waitForCalls(node, 3);
 
-    Mockito.verify(eventBus).fire(TopologyEvent.forceDown(ADDRESS));
-    Mockito.verify(eventBus, never()).fire(ChannelEvent.channelOpened(NODE));
+    verify(eventBus, VERIFY_TIMEOUT)
+        .fire(TopologyEvent.forceDown(node.getBroadcastRpcAddress().get()));
+    verify(eventBus, never()).fire(ChannelEvent.channelOpened(node));
 
+    verify(nodeMetricUpdater, VERIFY_TIMEOUT.times(3))
+        .incrementCounter(DefaultNodeMetric.CONNECTION_INIT_ERRORS, null);
     factoryHelper.verifyNoMoreCalls();
   }
 
   @Test
   public void should_reconnect_when_init_incomplete() throws Exception {
     // Short delay so we don't have to wait in the test
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
 
-    Mockito.when(defaultProfile.getInt(CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(2);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE)).thenReturn(2);
 
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
@@ -142,36 +153,36 @@ public class ChannelPoolInitTest extends ChannelPoolTestBase {
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
             // Init: 1 channel fails, the other succeeds
-            .failure(ADDRESS, "mock channel init failure")
-            .success(ADDRESS, channel1)
+            .failure(node, "mock channel init failure")
+            .success(node, channel1)
             // 1st reconnection
-            .pending(ADDRESS, channel2Future)
+            .pending(node, channel2Future)
             .build();
-    InOrder inOrder = Mockito.inOrder(eventBus);
+    InOrder inOrder = inOrder(eventBus);
 
     CompletionStage<ChannelPool> poolFuture =
-        ChannelPool.init(NODE, null, NodeDistance.LOCAL, context, "test");
+        ChannelPool.init(node, null, NodeDistance.LOCAL, context, "test");
 
-    factoryHelper.waitForCalls(ADDRESS, 2);
-    waitForPendingAdminTasks();
+    factoryHelper.waitForCalls(node, 2);
 
-    assertThat(poolFuture).isSuccess();
+    assertThatStage(poolFuture).isSuccess();
     ChannelPool pool = poolFuture.toCompletableFuture().get();
     assertThat(pool.channels).containsOnly(channel1);
-    inOrder.verify(eventBus).fire(ChannelEvent.channelOpened(NODE));
+    inOrder.verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node));
 
     // A reconnection should have been scheduled
-    Mockito.verify(reconnectionSchedule).nextDelay();
-    inOrder.verify(eventBus).fire(ChannelEvent.reconnectionStarted(NODE));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
+    inOrder.verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.reconnectionStarted(node));
 
     channel2Future.complete(channel2);
-    factoryHelper.waitForCalls(ADDRESS, 1);
-    waitForPendingAdminTasks();
-    inOrder.verify(eventBus).fire(ChannelEvent.channelOpened(NODE));
-    inOrder.verify(eventBus).fire(ChannelEvent.reconnectionStopped(NODE));
+    factoryHelper.waitForCalls(node, 1);
+    inOrder.verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node));
+    inOrder.verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.reconnectionStopped(node));
 
-    assertThat(pool.channels).containsOnly(channel1, channel2);
+    await().untilAsserted(() -> assertThat(pool.channels).containsOnly(channel1, channel2));
 
+    verify(nodeMetricUpdater, VERIFY_TIMEOUT)
+        .incrementCounter(DefaultNodeMetric.CONNECTION_INIT_ERRORS, null);
     factoryHelper.verifyNoMoreCalls();
   }
 }

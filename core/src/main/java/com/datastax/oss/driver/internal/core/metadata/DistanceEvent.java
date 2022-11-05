@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,15 @@
 package com.datastax.oss.driver.internal.core.metadata;
 
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
-import com.datastax.oss.driver.api.core.metadata.Node;
 import java.util.Objects;
+import net.jcip.annotations.Immutable;
 
 /**
  * Indicates that the load balancing policy has assigned a new distance to a host.
  *
  * <p>This is informational only: firing this event manually does <b>not</b> change the distance.
- * For that, see {@link LoadBalancingPolicyWrapper#setDistance(Node, NodeDistance)}.
  */
+@Immutable
 public class DistanceEvent {
   public final NodeDistance distance;
   public final DefaultNode node;
@@ -40,8 +40,7 @@ public class DistanceEvent {
       return true;
     } else if (other instanceof DistanceEvent) {
       DistanceEvent that = (DistanceEvent) other;
-      return this.distance == that.distance
-          && Objects.equals(this.node.getConnectAddress(), that.node.getConnectAddress());
+      return this.distance == that.distance && Objects.equals(this.node, that.node);
     } else {
       return false;
     }
@@ -49,11 +48,11 @@ public class DistanceEvent {
 
   @Override
   public int hashCode() {
-    return Objects.hash(this.distance, this.node.getConnectAddress());
+    return Objects.hash(this.distance, this.node);
   }
 
   @Override
   public String toString() {
-    return "DistanceEvent(" + distance + ", " + node.getConnectAddress() + ")";
+    return "DistanceEvent(" + distance + ", " + node + ")";
   }
 }

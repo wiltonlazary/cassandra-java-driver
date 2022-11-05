@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,57 +17,104 @@ package com.datastax.oss.driver.api.core.loadbalancing;
 
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.metadata.NodeState;
+import com.datastax.oss.driver.api.core.session.Request;
+import com.datastax.oss.driver.api.core.session.Session;
+import com.datastax.oss.driver.api.core.tracker.RequestTracker;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
-import java.util.Set;
+import java.util.UUID;
 
 /** Decides which Cassandra nodes to contact for each query. */
 public interface LoadBalancingPolicy extends AutoCloseable {
 
   /**
+   * Returns an optional {@link RequestTracker} to be registered with the session. Registering a
+   * request tracker allows load-balancing policies to track node latencies in order to pick the
+   * fastest ones.
+   *
+   * <p>This method is invoked only once during session configuration, and before any other methods
+   * in this interface. Note that at this point, the driver hasn't connected to any node yet.
+   *
+   * @since 4.13.0
+   */
+  @NonNull
+  default Optional<RequestTracker> getRequestTracker() {
+    return Optional.empty();
+  }
+
+  /**
    * Initializes this policy with the nodes discovered during driver initialization.
    *
    * <p>This method is guaranteed to be called exactly once per instance, and before any other
-   * method in this class.
+   * method in this interface except {@link #getRequestTracker()}. At this point, the driver has
+   * successfully connected to one of the contact points, and performed a first refresh of topology
+   * information (by default, the contents of {@code system.peers}), to discover other nodes in the
+   * cluster.
    *
-   * @param nodes the nodes discovered by the driver when it connected to the cluster. When this
-   *     method is invoked, their state is guaranteed to be either {@link NodeState#UP} or {@link
-   *     NodeState#UNKNOWN}. Node states may be updated concurrently while this method executes, but
-   *     if so you will receive a notification
+   * <p>This method must call {@link DistanceReporter#setDistance(Node, NodeDistance)
+   * distanceReporter.setDistance} for each provided node (otherwise that node will stay at distance
+   * {@link NodeDistance#IGNORED IGNORED}, and the driver won't open connections to it). Note that
+   * the node's {@link Node#getState() state} can be either {@link NodeState#UP UP} (for the
+   * successful contact point), {@link NodeState#DOWN DOWN} (for contact points that were tried
+   * unsuccessfully), or {@link NodeState#UNKNOWN UNKNOWN} (for contact points that weren't tried,
+   * or any other node discovered from the topology refresh). Node states may be updated
+   * concurrently while this method executes, but if so this policy will get notified after this
+   * method has returned, through other methods such as {@link #onUp(Node)} or {@link
+   * #onDown(Node)}.
+   *
+   * @param nodes all the nodes that are known to exist in the cluster (regardless of their state)
+   *     at the time of invocation.
+   * @param distanceReporter an object that will be used by the policy to signal distance changes.
+   *     Implementations will typically store this in a field, since new nodes may get {@link
+   *     #onAdd(Node) added} later and will need to have their distance set (or the policy might
+   *     change distances dynamically over time).
    */
-  void init(Set<Node> nodes, DistanceReporter distanceReporter);
+  void init(@NonNull Map<UUID, Node> nodes, @NonNull DistanceReporter distanceReporter);
 
   /**
    * Returns the coordinators to use for a new query.
    *
    * <p>Each new query will call this method, and try the returned nodes sequentially.
    *
+   * @param request the request that is being routed. Note that this can be null for some internal
+   *     uses.
+   * @param session the session that is executing the request. Note that this can be null for some
+   *     internal uses.
    * @return the list of coordinators to try. <b>This must be a concurrent queue</b>; {@link
    *     java.util.concurrent.ConcurrentLinkedQueue} is a good choice.
    */
-  Queue<Node> newQueryPlan(/*TODO keyspace, statement*/ );
+  @NonNull
+  Queue<Node> newQueryPlan(@Nullable Request request, @Nullable Session session);
 
   /**
    * Called when a node is added to the cluster.
    *
-   * <p>The new node will have the state {@link NodeState#UNKNOWN}. The actual state will be known
-   * when:
+   * <p>The new node will be at distance {@link NodeDistance#IGNORED IGNORED}, and have the state
+   * {@link NodeState#UNKNOWN UNKNOWN}.
    *
-   * <ul>
-   *   <li>the load balancing policy signals an active distance for the node, and the driver tries
-   *       to connect to it.
-   *   <li>or a topology event is received from the cluster.
-   * </ul>
+   * <p>If this method assigns an active distance to the node, the driver will try to create a
+   * connection pool to it (resulting in a state change to {@link #onUp(Node) UP} or {@link
+   * #onDown(Node) DOWN} depending on the outcome).
+   *
+   * <p>If it leaves it at distance {@link NodeDistance#IGNORED IGNORED}, the driver won't attempt
+   * any connection. The node state will remain unknown, but might be updated later if a topology
+   * event is received from the cluster.
+   *
+   * @see #init(Map, DistanceReporter)
    */
-  void onAdd(Node node);
+  void onAdd(@NonNull Node node);
 
   /** Called when a node is determined to be up. */
-  void onUp(Node node);
+  void onUp(@NonNull Node node);
 
   /** Called when a node is determined to be down. */
-  void onDown(Node node);
+  void onDown(@NonNull Node node);
 
   /** Called when a node is removed from the cluster. */
-  void onRemove(Node node);
+  void onRemove(@NonNull Node node);
 
   /** Called when the cluster that this policy is associated with closes. */
   @Override
@@ -75,6 +122,6 @@ public interface LoadBalancingPolicy extends AutoCloseable {
 
   /** An object that the policy uses to signal decisions it makes about node distances. */
   interface DistanceReporter {
-    void setDistance(Node node, NodeDistance distance);
+    void setDistance(@NonNull Node node, @NonNull NodeDistance distance);
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,30 +17,42 @@ package com.datastax.oss.driver.api.core.connection;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Indicates that a write was attempted on a connection that already handles too many simultaneous
  * requests.
  *
  * <p>This might happen under heavy load. The driver will automatically try the next node in the
- * query plan. Therefore the only way that the client can observe this exception is as part of a
+ * query plan. Therefore, the only way that the client can observe this exception is as part of a
  * {@link AllNodesFailedException}.
  */
 public class BusyConnectionException extends DriverException {
 
+  // Note: the driver doesn't use this constructor anymore, it is preserved only for backward
+  // compatibility.
+  @SuppressWarnings("unused")
   public BusyConnectionException(int maxAvailableIds) {
     this(
         String.format(
             "Connection has exceeded its maximum of %d simultaneous requests", maxAvailableIds),
+        null,
         false);
   }
 
-  private BusyConnectionException(String message, boolean writableStackTrace) {
-    super(message, null, writableStackTrace);
+  public BusyConnectionException(String message) {
+    this(message, null, false);
+  }
+
+  private BusyConnectionException(
+      String message, ExecutionInfo executionInfo, boolean writableStackTrace) {
+    super(message, executionInfo, null, writableStackTrace);
   }
 
   @Override
+  @NonNull
   public DriverException copy() {
-    return new BusyConnectionException(getMessage(), true);
+    return new BusyConnectionException(getMessage(), getExecutionInfo(), true);
   }
 }

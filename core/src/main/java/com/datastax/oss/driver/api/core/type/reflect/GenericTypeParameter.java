@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,31 @@
  */
 package com.datastax.oss.driver.api.core.type.reflect;
 
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
-
-import static com.google.common.base.Preconditions.checkArgument;
+import net.jcip.annotations.Immutable;
 
 /**
  * Captures a free type variable that can be used in {@link GenericType#where(GenericTypeParameter,
  * GenericType)}.
  */
+@Immutable
 @SuppressWarnings("unused") // for T (unfortunately has to cover the whole class)
 public class GenericTypeParameter<T> {
   private final TypeVariable<?> typeVariable;
 
   protected GenericTypeParameter() {
     Type superclass = getClass().getGenericSuperclass();
-    checkArgument(superclass instanceof ParameterizedType, "%s isn't parameterized", superclass);
+    Preconditions.checkArgument(
+        superclass instanceof ParameterizedType, "%s isn't parameterized", superclass);
     this.typeVariable =
         (TypeVariable<?>) ((ParameterizedType) superclass).getActualTypeArguments()[0];
   }
 
+  @NonNull
   public TypeVariable<?> getTypeVariable() {
     return typeVariable;
   }

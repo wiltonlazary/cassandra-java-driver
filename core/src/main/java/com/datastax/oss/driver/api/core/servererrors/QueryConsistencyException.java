@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@
 package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.ConsistencyLevel;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * A failure to reach the required consistency level during the execution of a query.
@@ -37,19 +39,21 @@ public abstract class QueryConsistencyException extends QueryExecutionException 
   private final int blockFor;
 
   protected QueryConsistencyException(
-      Node coordinator,
-      String message,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @NonNull ConsistencyLevel consistencyLevel,
       int received,
       int blockFor,
+      ExecutionInfo executionInfo,
       boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+    super(coordinator, message, executionInfo, writableStackTrace);
     this.consistencyLevel = consistencyLevel;
     this.received = received;
     this.blockFor = blockFor;
   }
 
   /** The consistency level of the operation that failed. */
+  @NonNull
   public ConsistencyLevel getConsistencyLevel() {
     return consistencyLevel;
   }

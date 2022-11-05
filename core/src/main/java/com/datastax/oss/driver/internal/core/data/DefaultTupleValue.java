@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,22 +20,40 @@ import com.datastax.oss.driver.api.core.data.TupleValue;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.TupleType;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
 import com.datastax.oss.protocol.internal.util.Bytes;
-import com.google.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.Objects;
+import net.jcip.annotations.NotThreadSafe;
 
-public class DefaultTupleValue implements TupleValue {
+/**
+ * Implementation note: contrary to most GettableBy* and SettableBy* implementations, this class is
+ * mutable.
+ */
+@NotThreadSafe
+public class DefaultTupleValue implements TupleValue, Serializable {
 
   private static final long serialVersionUID = 1;
-
   private final TupleType type;
   private final ByteBuffer[] values;
 
-  public DefaultTupleValue(TupleType type) {
+  public DefaultTupleValue(@NonNull TupleType type) {
     this(type, new ByteBuffer[type.getComponentTypes().size()]);
+  }
+
+  public DefaultTupleValue(@NonNull TupleType type, @NonNull Object... values) {
+    this(
+        type,
+        ValuesHelper.encodeValues(
+            values,
+            type.getComponentTypes(),
+            type.getAttachmentPoint().getCodecRegistry(),
+            type.getAttachmentPoint().getProtocolVersion()));
   }
 
   private DefaultTupleValue(TupleType type, ByteBuffer[] values) {
@@ -44,6 +62,7 @@ public class DefaultTupleValue implements TupleValue {
     this.values = values;
   }
 
+  @NonNull
   @Override
   public TupleType getType() {
     return type;
@@ -59,25 +78,29 @@ public class DefaultTupleValue implements TupleValue {
     return values[i];
   }
 
+  @NonNull
   @Override
-  public TupleValue setBytesUnsafe(int i, ByteBuffer v) {
+  public TupleValue setBytesUnsafe(int i, @Nullable ByteBuffer v) {
     values[i] = v;
     return this;
   }
 
+  @NonNull
   @Override
   public DataType getType(int i) {
     return type.getComponentTypes().get(i);
   }
 
+  @NonNull
   @Override
   public CodecRegistry codecRegistry() {
-    return type.getAttachmentPoint().codecRegistry();
+    return type.getAttachmentPoint().getCodecRegistry();
   }
 
+  @NonNull
   @Override
   public ProtocolVersion protocolVersion() {
-    return type.getAttachmentPoint().protocolVersion();
+    return type.getAttachmentPoint().getProtocolVersion();
   }
 
   /**
@@ -88,9 +111,65 @@ public class DefaultTupleValue implements TupleValue {
     return new SerializationProxy(this);
   }
 
-  private void readObject(ObjectInputStream stream) throws InvalidObjectException {
+  private void readObject(@SuppressWarnings("unused") ObjectInputStream stream)
+      throws InvalidObjectException {
     // Should never be called since we serialized a proxy
     throw new InvalidObjectException("Proxy required");
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+
+    if (!(o instanceof TupleValue)) {
+      return false;
+    }
+    TupleValue that = (TupleValue) o;
+
+    if (!type.equals(that.getType())) {
+      return false;
+    }
+
+    for (int i = 0; i < values.length; i++) {
+      DataType innerThisType = type.getComponentTypes().get(i);
+      DataType innerThatType = that.getType().getComponentTypes().get(i);
+      if (!innerThisType.equals(innerThatType)) {
+        return false;
+      }
+      Object thisValue =
+          this.codecRegistry()
+              .codecFor(innerThisType)
+              .decode(this.getBytesUnsafe(i), this.protocolVersion());
+      Object thatValue =
+          that.codecRegistry()
+              .codecFor(innerThatType)
+              .decode(that.getBytesUnsafe(i), that.protocolVersion());
+      if (!Objects.equals(thisValue, thatValue)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public int hashCode() {
+
+    int result = type.hashCode();
+
+    for (int i = 0; i < values.length; i++) {
+      DataType innerThisType = type.getComponentTypes().get(i);
+      Object thisValue =
+          this.codecRegistry()
+              .codecFor(innerThisType)
+              .decode(this.values[i], this.protocolVersion());
+      if (thisValue != null) {
+        result = 31 * result + thisValue.hashCode();
+      }
+    }
+
+    return result;
   }
 
   private static class SerializationProxy implements Serializable {

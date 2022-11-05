@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,21 +17,29 @@ package com.datastax.oss.driver.api.core.connection;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Indicates a generic error while initializing a connection.
  *
  * <p>The only time when this is returned directly to the client (wrapped in a {@link
  * AllNodesFailedException}) is at initialization. If it happens later when the driver is already
- * connected, it is just logged an the connection is reattempted.
+ * connected, it is just logged and the connection is reattempted.
  */
 public class ConnectionInitException extends DriverException {
-  public ConnectionInitException(String message, Throwable cause) {
-    super(message, cause, true);
+  public ConnectionInitException(@NonNull String message, @Nullable Throwable cause) {
+    super(message, null, cause, true);
   }
 
+  private ConnectionInitException(String message, ExecutionInfo executionInfo, Throwable cause) {
+    super(message, executionInfo, cause, true);
+  }
+
+  @NonNull
   @Override
   public DriverException copy() {
-    return new ConnectionInitException(getMessage(), getCause());
+    return new ConnectionInitException(getMessage(), getExecutionInfo(), getCause());
   }
 }

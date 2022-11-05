@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,14 +20,18 @@ import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.TupleType;
 import com.datastax.oss.driver.internal.core.data.DefaultTupleValue;
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.base.Joiner;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.Serializable;
 import java.util.List;
+import net.jcip.annotations.Immutable;
 
-public class DefaultTupleType implements TupleType {
+@Immutable
+public class DefaultTupleType implements TupleType, Serializable {
 
   private static final long serialVersionUID = 1;
 
@@ -36,24 +40,33 @@ public class DefaultTupleType implements TupleType {
 
   private transient volatile AttachmentPoint attachmentPoint;
 
-  public DefaultTupleType(List<DataType> componentTypes, AttachmentPoint attachmentPoint) {
+  public DefaultTupleType(
+      @NonNull List<DataType> componentTypes, @NonNull AttachmentPoint attachmentPoint) {
     Preconditions.checkNotNull(componentTypes);
     this.componentTypes = ImmutableList.copyOf(componentTypes);
     this.attachmentPoint = attachmentPoint;
   }
 
-  public DefaultTupleType(List<DataType> componentTypes) {
+  public DefaultTupleType(@NonNull List<DataType> componentTypes) {
     this(componentTypes, AttachmentPoint.NONE);
   }
 
+  @NonNull
   @Override
   public List<DataType> getComponentTypes() {
     return componentTypes;
   }
 
+  @NonNull
   @Override
   public TupleValue newValue() {
     return new DefaultTupleValue(this);
+  }
+
+  @NonNull
+  @Override
+  public TupleValue newValue(@NonNull Object... values) {
+    return new DefaultTupleValue(this, values);
   }
 
   @Override
@@ -62,13 +75,14 @@ public class DefaultTupleType implements TupleType {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     this.attachmentPoint = attachmentPoint;
     for (DataType componentType : componentTypes) {
       componentType.attach(attachmentPoint);
     }
   }
 
+  @NonNull
   @Override
   public AttachmentPoint getAttachmentPoint() {
     return attachmentPoint;

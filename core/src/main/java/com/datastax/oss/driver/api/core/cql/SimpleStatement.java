@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,19 @@
  */
 package com.datastax.oss.driver.api.core.cql;
 
-import com.datastax.oss.driver.api.core.session.Session;
+import com.datastax.oss.driver.api.core.CqlIdentifier;
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
+import com.datastax.oss.driver.api.core.context.DriverContext;
+import com.datastax.oss.driver.api.core.session.Request;
 import com.datastax.oss.driver.internal.core.cql.DefaultSimpleStatement;
-import java.util.Arrays;
-import java.util.Collections;
+import com.datastax.oss.driver.internal.core.time.ServerSideTimestampGenerator;
+import com.datastax.oss.driver.internal.core.util.Sizes;
+import com.datastax.oss.protocol.internal.PrimitiveSizes;
+import com.datastax.oss.protocol.internal.util.collection.NullAllowingImmutableList;
+import com.datastax.oss.protocol.internal.util.collection.NullAllowingImmutableMap;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.util.List;
 import java.util.Map;
 
@@ -28,7 +37,7 @@ import java.util.Map;
  *
  * <p>To create instances, client applications can use the {@code newInstance} factory methods on
  * this interface for common cases, or {@link #builder(String)} for more control over the
- * parameters. They can then be passed to {@link Session#execute(Statement)}.
+ * parameters. They can then be passed to {@link CqlSession#execute(Statement)}.
  *
  * <p>Simple statements should be reserved for queries that will only be executed a few times by an
  * application. For more frequent queries, {@link PreparedStatement} provides many advantages: it is
@@ -48,70 +57,120 @@ public interface SimpleStatement extends BatchableStatement<SimpleStatement> {
   /**
    * Shortcut to create an instance of the default implementation with only a CQL query (see {@link
    * SimpleStatementBuilder} for the defaults for the other fields).
+   *
+   * <p>Note that the returned object is <b>immutable</b>.
    */
-  static SimpleStatement newInstance(String cqlQuery) {
+  static SimpleStatement newInstance(@NonNull String cqlQuery) {
     return new DefaultSimpleStatement(
         cqlQuery,
-        Collections.emptyList(),
-        Collections.emptyMap(),
+        NullAllowingImmutableList.of(),
+        NullAllowingImmutableMap.of(),
         null,
         null,
-        Collections.emptyMap(),
+        null,
+        null,
+        null,
+        null,
+        NullAllowingImmutableMap.of(),
         null,
         false,
-        Long.MIN_VALUE,
-        null);
+        Statement.NO_DEFAULT_TIMESTAMP,
+        null,
+        Integer.MIN_VALUE,
+        null,
+        null,
+        null,
+        null,
+        Statement.NO_NOW_IN_SECONDS);
   }
 
   /**
    * Shortcut to create an instance of the default implementation with only a CQL query and
    * positional values (see {@link SimpleStatementBuilder} for the defaults for the other fields).
+   *
+   * <p>Note that the returned object is <b>immutable</b>.
+   *
+   * @param positionalValues the values for placeholders in the query string. Individual values can
+   *     be {@code null}, but the vararg array itself can't.
    */
-  static SimpleStatement newInstance(String cqlQuery, Object... positionalValues) {
+  static SimpleStatement newInstance(
+      @NonNull String cqlQuery, @NonNull Object... positionalValues) {
     return new DefaultSimpleStatement(
         cqlQuery,
-        Arrays.asList(positionalValues),
-        Collections.emptyMap(),
+        NullAllowingImmutableList.of(positionalValues),
+        NullAllowingImmutableMap.of(),
         null,
         null,
-        Collections.emptyMap(),
+        null,
+        null,
+        null,
+        null,
+        NullAllowingImmutableMap.of(),
         null,
         false,
-        Long.MIN_VALUE,
-        null);
+        Statement.NO_DEFAULT_TIMESTAMP,
+        null,
+        Integer.MIN_VALUE,
+        null,
+        null,
+        null,
+        null,
+        Statement.NO_NOW_IN_SECONDS);
   }
 
   /**
    * Shortcut to create an instance of the default implementation with only a CQL query and named
    * values (see {@link SimpleStatementBuilder} for the defaults for other fields).
+   *
+   * <p>Note that the returned object is <b>immutable</b>.
    */
-  static SimpleStatement newInstance(String cqlQuery, Map<String, Object> namedValues) {
+  static SimpleStatement newInstance(
+      @NonNull String cqlQuery, @NonNull Map<String, Object> namedValues) {
     return new DefaultSimpleStatement(
         cqlQuery,
-        Collections.emptyList(),
-        namedValues,
+        NullAllowingImmutableList.of(),
+        DefaultSimpleStatement.wrapKeys(namedValues),
         null,
         null,
-        Collections.emptyMap(),
+        null,
+        null,
+        null,
+        null,
+        NullAllowingImmutableMap.of(),
         null,
         false,
-        Long.MIN_VALUE,
-        null);
+        Statement.NO_DEFAULT_TIMESTAMP,
+        null,
+        Integer.MIN_VALUE,
+        null,
+        null,
+        null,
+        null,
+        Statement.NO_NOW_IN_SECONDS);
   }
 
-  /** Returns a builder to create an instance of the default implementation. */
-  static SimpleStatementBuilder builder(String query) {
+  /**
+   * Returns a builder to create an instance of the default implementation.
+   *
+   * <p>Note that this builder is mutable and not thread-safe.
+   */
+  @NonNull
+  static SimpleStatementBuilder builder(@NonNull String query) {
     return new SimpleStatementBuilder(query);
   }
 
   /**
    * Returns a builder to create an instance of the default implementation, copying the fields of
    * the given statement.
+   *
+   * <p>Note that this builder is mutable and not thread-safe.
    */
-  static SimpleStatementBuilder builder(SimpleStatement template) {
+  @NonNull
+  static SimpleStatementBuilder builder(@NonNull SimpleStatement template) {
     return new SimpleStatementBuilder(template);
   }
 
+  @NonNull
   String getQuery();
 
   /**
@@ -133,41 +192,118 @@ public interface SimpleStatement extends BatchableStatement<SimpleStatement> {
    * method. However custom implementations may choose to be mutable and return the same instance.
    *
    * @see #setPositionalValues(List)
-   * @see #setNamedValues(Map)
+   * @see #setNamedValuesWithIds(Map)
    */
-  SimpleStatement setQuery(String newQuery);
+  @NonNull
+  SimpleStatement setQuery(@NonNull String newQuery);
 
+  /**
+   * Sets the CQL keyspace to associate with the query.
+   *
+   * <p>This feature is only available with {@link DefaultProtocolVersion#V5 native protocol v5} or
+   * higher. Specifying a per-request keyspace with lower protocol versions will cause a runtime
+   * error.
+   *
+   * @see Request#getKeyspace()
+   */
+  @NonNull
+  SimpleStatement setKeyspace(@Nullable CqlIdentifier newKeyspace);
+
+  /**
+   * Shortcut for {@link #setKeyspace(CqlIdentifier)
+   * setKeyspace(CqlIdentifier.fromCql(newKeyspaceName))}.
+   */
+  @NonNull
+  default SimpleStatement setKeyspace(@NonNull String newKeyspaceName) {
+    return setKeyspace(CqlIdentifier.fromCql(newKeyspaceName));
+  }
+
+  @NonNull
   List<Object> getPositionalValues();
 
   /**
    * Sets the positional values to bind to anonymous placeholders.
    *
-   * <p>You can use either positional or named values, but not both. Therefore if this method
-   * returns a non-empty list, then {@link #getNamedValues()} must return an empty map, otherwise a
-   * runtime error will be thrown.
+   * <p>You can use either positional or named values, but not both. Therefore if you call this
+   * method but {@link #getNamedValues()} returns a non-empty map, an {@link
+   * IllegalArgumentException} will be thrown.
    *
    * <p>The driver's built-in implementation is immutable, and returns a new instance from this
    * method. However custom implementations may choose to be mutable and return the same instance.
    *
    * @see #setQuery(String)
    */
-  SimpleStatement setPositionalValues(List<Object> newPositionalValues);
+  @NonNull
+  SimpleStatement setPositionalValues(@NonNull List<Object> newPositionalValues);
 
-  Map<String, Object> getNamedValues();
+  @NonNull
+  Map<CqlIdentifier, Object> getNamedValues();
 
   /**
    * Sets the named values to bind to named placeholders.
    *
    * <p>Names must be stripped of the leading column.
    *
-   * <p>You can use either positional or named values, but not both. Therefore if this method
-   * returns a non-empty map, then {@link #getPositionalValues()} must return an empty list,
-   * otherwise a runtime error will be thrown.
+   * <p>You can use either positional or named values, but not both. Therefore if you call this
+   * method but {@link #getPositionalValues()} returns a non-empty list, an {@link
+   * IllegalArgumentException} will be thrown.
    *
    * <p>The driver's built-in implementation is immutable, and returns a new instance from this
    * method. However custom implementations may choose to be mutable and return the same instance.
    *
    * @see #setQuery(String)
    */
-  SimpleStatement setNamedValues(Map<String, Object> newNamedValues);
+  @NonNull
+  SimpleStatement setNamedValuesWithIds(@NonNull Map<CqlIdentifier, Object> newNamedValues);
+
+  /**
+   * Shortcut for {@link #setNamedValuesWithIds(Map)} with raw strings as value names. The keys are
+   * converted on the fly with {@link CqlIdentifier#fromCql(String)}.
+   */
+  @NonNull
+  default SimpleStatement setNamedValues(@NonNull Map<String, Object> newNamedValues) {
+    return setNamedValuesWithIds(DefaultSimpleStatement.wrapKeys(newNamedValues));
+  }
+
+  @Override
+  default int computeSizeInBytes(@NonNull DriverContext context) {
+    int size = Sizes.minimumStatementSize(this, context);
+
+    // SimpleStatement's additional elements to take into account are:
+    // - query string
+    // - parameters (named or not)
+    // - per-query keyspace
+    // - page size
+    // - paging state
+    // - timestamp
+
+    // query
+    size += PrimitiveSizes.sizeOfLongString(getQuery());
+
+    // parameters
+    size +=
+        Sizes.sizeOfSimpleStatementValues(
+            this, context.getProtocolVersion(), context.getCodecRegistry());
+
+    // per-query keyspace
+    if (getKeyspace() != null) {
+      size += PrimitiveSizes.sizeOfString(getKeyspace().asInternal());
+    }
+
+    // page size
+    size += PrimitiveSizes.INT;
+
+    // paging state
+    if (getPagingState() != null) {
+      size += PrimitiveSizes.sizeOfBytes(getPagingState());
+    }
+
+    // timestamp
+    if (!(context.getTimestampGenerator() instanceof ServerSideTimestampGenerator)
+        || getQueryTimestamp() != Statement.NO_DEFAULT_TIMESTAMP) {
+      size += PrimitiveSizes.LONG;
+    }
+
+    return size;
+  }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,14 @@ package com.datastax.oss.driver.internal.core.pool;
 import com.datastax.oss.driver.api.core.AsyncAutoCloseable;
 import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.InvalidKeyspaceException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.UnsupportedProtocolVersionException;
+import com.datastax.oss.driver.api.core.auth.AuthenticationException;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
+import com.datastax.oss.driver.api.core.connection.ReconnectionPolicy;
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
 import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.api.core.metrics.DefaultNodeMetric;
 import com.datastax.oss.driver.internal.core.channel.ChannelEvent;
 import com.datastax.oss.driver.internal.core.channel.ChannelFactory;
 import com.datastax.oss.driver.internal.core.channel.ClusterNameMismatchException;
@@ -30,13 +34,16 @@ import com.datastax.oss.driver.internal.core.channel.DriverChannelOptions;
 import com.datastax.oss.driver.internal.core.config.ConfigChangeEvent;
 import com.datastax.oss.driver.internal.core.context.EventBus;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metadata.DefaultNode;
 import com.datastax.oss.driver.internal.core.metadata.TopologyEvent;
+import com.datastax.oss.driver.internal.core.util.Loggers;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
 import com.datastax.oss.driver.internal.core.util.concurrent.Reconnection;
 import com.datastax.oss.driver.internal.core.util.concurrent.RunOrSchedule;
 import com.datastax.oss.driver.internal.core.util.concurrent.UncaughtExceptions;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Sets;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
@@ -47,6 +54,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,6 +66,7 @@ import org.slf4j.LoggerFactory;
  * <p>If one or more channels go down, a reconnection process starts in order to replace them; it
  * runs until the channel count is back to its intended target.
  */
+@ThreadSafe
 public class ChannelPool implements AsyncAutoCloseable {
   private static final Logger LOG = LoggerFactory.getLogger(ChannelPool.class);
 
@@ -98,9 +107,9 @@ public class ChannelPool implements AsyncAutoCloseable {
       String sessionLogPrefix) {
     this.node = node;
     this.initialKeyspaceName = keyspaceName;
-    this.adminExecutor = context.nettyOptions().adminEventExecutorGroup().next();
+    this.adminExecutor = context.getNettyOptions().adminEventExecutorGroup().next();
     this.sessionLogPrefix = sessionLogPrefix;
-    this.logPrefix = sessionLogPrefix + "|" + node.getConnectAddress();
+    this.logPrefix = sessionLogPrefix + "|" + node.getEndPoint();
     this.singleThreaded = new SingleThreaded(keyspaceName, distance, context);
   }
 
@@ -134,12 +143,44 @@ public class ChannelPool implements AsyncAutoCloseable {
    *     request path, and we want to avoid complex check-then-act semantics; therefore this might
    *     race and return a channel that is already closed, or {@code null}. In those cases, it is up
    *     to the caller to fail fast and move to the next node.
-   *     <p>There is no need to return the channel.
    */
   public DriverChannel next() {
     return channels.next();
   }
 
+  /** @return the number of active channels in the pool. */
+  public int size() {
+    return channels.size();
+  }
+
+  /** @return the number of available stream ids on all channels in the pool. */
+  public int getAvailableIds() {
+    return channels.getAvailableIds();
+  }
+
+  /**
+   * @return the number of requests currently executing on all channels in this pool (including
+   *     {@link #getOrphanedIds() orphaned ids}).
+   */
+  public int getInFlight() {
+    return channels.getInFlight();
+  }
+
+  /**
+   * @return the number of stream ids for requests in all channels in this pool that have either
+   *     timed out or been cancelled, but for which we can't release the stream id because a request
+   *     might still come from the server.
+   */
+  public int getOrphanedIds() {
+    return channels.getOrphanedIds();
+  }
+
+  /**
+   * Sets a new distance for the node this pool belongs to. This method returns immediately, the new
+   * distance will be set asynchronously.
+   *
+   * @param newDistance the new distance to set.
+   */
   public void resize(NodeDistance newDistance) {
     RunOrSchedule.on(adminExecutor, () -> singleThreaded.resize(newDistance));
   }
@@ -159,17 +200,20 @@ public class ChannelPool implements AsyncAutoCloseable {
     RunOrSchedule.on(adminExecutor, singleThreaded::reconnectNow);
   }
 
+  @NonNull
   @Override
   public CompletionStage<Void> closeFuture() {
     return singleThreaded.closeFuture;
   }
 
+  @NonNull
   @Override
   public CompletionStage<Void> closeAsync() {
     RunOrSchedule.on(adminExecutor, singleThreaded::close);
     return singleThreaded.closeFuture;
   }
 
+  @NonNull
   @Override
   public CompletionStage<Void> forceCloseAsync() {
     RunOrSchedule.on(adminExecutor, singleThreaded::forceClose);
@@ -190,9 +234,9 @@ public class ChannelPool implements AsyncAutoCloseable {
 
     private NodeDistance distance;
     private int wantedCount;
-    private CompletableFuture<ChannelPool> connectFuture = new CompletableFuture<>();
+    private final CompletableFuture<ChannelPool> connectFuture = new CompletableFuture<>();
     private boolean isConnecting;
-    private CompletableFuture<Void> closeFuture = new CompletableFuture<>();
+    private final CompletableFuture<Void> closeFuture = new CompletableFuture<>();
     private boolean isClosing;
     private CompletableFuture<Void> setKeyspaceFuture;
 
@@ -201,16 +245,17 @@ public class ChannelPool implements AsyncAutoCloseable {
     private SingleThreaded(
         CqlIdentifier keyspaceName, NodeDistance distance, InternalDriverContext context) {
       this.keyspaceName = keyspaceName;
-      this.config = context.config();
+      this.config = context.getConfig();
       this.distance = distance;
       this.wantedCount = getConfiguredSize(distance);
-      this.channelFactory = context.channelFactory();
-      this.eventBus = context.eventBus();
+      this.channelFactory = context.getChannelFactory();
+      this.eventBus = context.getEventBus();
+      ReconnectionPolicy reconnectionPolicy = context.getReconnectionPolicy();
       this.reconnection =
           new Reconnection(
               logPrefix,
               adminExecutor,
-              context.reconnectionPolicy(),
+              () -> reconnectionPolicy.newNodeSchedule(node),
               this::addMissingChannels,
               () -> eventBus.fire(ChannelEvent.reconnectionStarted(node)),
               () -> eventBus.fire(ChannelEvent.reconnectionStopped(node)));
@@ -247,12 +292,10 @@ public class ChannelPool implements AsyncAutoCloseable {
       DriverChannelOptions options =
           DriverChannelOptions.builder()
               .withKeyspace(keyspaceName)
-              .reportAvailableIds(wantedCount > 1)
               .withOwnerLogPrefix(sessionLogPrefix)
               .build();
       for (int i = 0; i < missing; i++) {
-        CompletionStage<DriverChannel> channelFuture =
-            channelFactory.connect(node.getConnectAddress(), options);
+        CompletionStage<DriverChannel> channelFuture = channelFactory.connect(node, options);
         pendingChannels.add(channelFuture);
       }
       return CompletableFutures.allDone(pendingChannels)
@@ -261,24 +304,39 @@ public class ChannelPool implements AsyncAutoCloseable {
 
     private boolean onAllConnected(@SuppressWarnings("unused") Void v) {
       assert adminExecutor.inEventLoop();
-      ClusterNameMismatchException clusterNameMismatch = null;
+      Throwable fatalError = null;
       int invalidKeyspaceErrors = 0;
       for (CompletionStage<DriverChannel> pendingChannel : pendingChannels) {
         CompletableFuture<DriverChannel> future = pendingChannel.toCompletableFuture();
         assert future.isDone();
         if (future.isCompletedExceptionally()) {
           Throwable error = CompletableFutures.getFailed(future);
-          LOG.debug("[{}] Error while opening new channel", logPrefix, error);
-          // TODO we don't log at a higher level because it's not a fatal error, but this should probably be recorded somewhere (metric?)
-
-          // TODO auth exception => WARN and keep reconnecting
-          // TODO protocol error => WARN and force down
-
-          if (error instanceof ClusterNameMismatchException) {
+          ((DefaultNode) node)
+              .getMetricUpdater()
+              .incrementCounter(
+                  error instanceof AuthenticationException
+                      ? DefaultNodeMetric.AUTHENTICATION_ERRORS
+                      : DefaultNodeMetric.CONNECTION_INIT_ERRORS,
+                  null);
+          if (error instanceof ClusterNameMismatchException
+              || error instanceof UnsupportedProtocolVersionException) {
             // This will likely be thrown by all channels, but finish the loop cleanly
-            clusterNameMismatch = (ClusterNameMismatchException) error;
+            fatalError = error;
+          } else if (error instanceof AuthenticationException) {
+            // Always warn because this is most likely something the operator needs to fix.
+            // Keep going to reconnect if it can be fixed without bouncing the client.
+            Loggers.warnWithException(LOG, "[{}] Authentication error", logPrefix, error);
           } else if (error instanceof InvalidKeyspaceException) {
             invalidKeyspaceErrors += 1;
+          } else {
+            if (config
+                .getDefaultProfile()
+                .getBoolean(DefaultDriverOption.CONNECTION_WARN_INIT_ERROR)) {
+              Loggers.warnWithException(
+                  LOG, "[{}]  Error while opening new channel", logPrefix, error);
+            } else {
+              LOG.debug("[{}]  Error while opening new channel", logPrefix, error);
+            }
           }
         } else {
           DriverChannel channel = CompletableFutures.getCompleted(future);
@@ -310,13 +368,23 @@ public class ChannelPool implements AsyncAutoCloseable {
         }
       }
       // If all channels failed, assume the keyspace is wrong
-      invalidKeyspace = (invalidKeyspaceErrors == pendingChannels.size());
+      invalidKeyspace =
+          invalidKeyspaceErrors > 0 && invalidKeyspaceErrors == pendingChannels.size();
 
       pendingChannels.clear();
 
-      if (clusterNameMismatch != null) {
-        LOG.warn("[{}] {}", logPrefix, clusterNameMismatch.getMessage());
-        eventBus.fire(TopologyEvent.forceDown(node.getConnectAddress()));
+      if (fatalError != null) {
+        Loggers.warnWithException(
+            LOG,
+            "[{}] Fatal error while initializing pool, forcing the node down",
+            logPrefix,
+            fatalError);
+        // Note: getBroadcastRpcAddress() can only be empty for the control node (and not for modern
+        // C* versions anyway). If we already have a control connection open to that node, it's
+        // impossible to get a protocol version or cluster name mismatch error while creating the
+        // pool, so it's safe to ignore this case.
+        node.getBroadcastRpcAddress()
+            .ifPresent(address -> eventBus.fire(TopologyEvent.forceDown(address)));
         // Don't bother continuing, the pool will get shut down soon anyway
         return true;
       }
@@ -473,7 +541,7 @@ public class ChannelPool implements AsyncAutoCloseable {
         GenericFutureListener<Future<? super Void>> channelCloseListener =
             f -> {
               if (!f.isSuccess()) {
-                LOG.warn("[{}] Error closing channel", logPrefix, f.cause());
+                Loggers.warnWithException(LOG, "[{}] Error closing channel", logPrefix, f.cause());
               }
               if (remaining.decrementAndGet() == 0) {
                 closeFuture.complete(null);
@@ -508,8 +576,8 @@ public class ChannelPool implements AsyncAutoCloseable {
           .getDefaultProfile()
           .getInt(
               (distance == NodeDistance.LOCAL)
-                  ? CoreDriverOption.CONNECTION_POOL_LOCAL_SIZE
-                  : CoreDriverOption.CONNECTION_POOL_REMOTE_SIZE);
+                  ? DefaultDriverOption.CONNECTION_POOL_LOCAL_SIZE
+                  : DefaultDriverOption.CONNECTION_POOL_REMOTE_SIZE);
     }
   }
 }

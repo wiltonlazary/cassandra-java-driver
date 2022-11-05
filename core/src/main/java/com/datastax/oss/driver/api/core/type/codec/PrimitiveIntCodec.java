@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 package com.datastax.oss.driver.api.core.type.codec;
 
 import com.datastax.oss.driver.api.core.ProtocolVersion;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 
 /**
@@ -26,17 +28,20 @@ import java.nio.ByteBuffer;
  */
 public interface PrimitiveIntCodec extends TypeCodec<Integer> {
 
-  ByteBuffer encodePrimitive(int value, ProtocolVersion protocolVersion);
+  @Nullable
+  ByteBuffer encodePrimitive(int value, @NonNull ProtocolVersion protocolVersion);
 
-  int decodePrimitive(ByteBuffer value, ProtocolVersion protocolVersion);
+  int decodePrimitive(@Nullable ByteBuffer value, @NonNull ProtocolVersion protocolVersion);
 
+  @Nullable
   @Override
-  default ByteBuffer encode(Integer value, ProtocolVersion protocolVersion) {
+  default ByteBuffer encode(@Nullable Integer value, @NonNull ProtocolVersion protocolVersion) {
     return (value == null) ? null : encodePrimitive(value, protocolVersion);
   }
 
+  @Nullable
   @Override
-  default Integer decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  default Integer decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     return (bytes == null || bytes.remaining() == 0)
         ? null
         : decodePrimitive(bytes, protocolVersion);

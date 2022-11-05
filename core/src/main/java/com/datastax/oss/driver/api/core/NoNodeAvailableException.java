@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package com.datastax.oss.driver.api.core;
 
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Collections;
 
 /**
@@ -25,11 +27,16 @@ import java.util.Collections;
  */
 public class NoNodeAvailableException extends AllNodesFailedException {
   public NoNodeAvailableException() {
-    super("No node was available to execute the query", Collections.emptyMap());
+    this(null);
   }
 
+  private NoNodeAvailableException(ExecutionInfo executionInfo) {
+    super("No node was available to execute the query", executionInfo, Collections.emptySet());
+  }
+
+  @NonNull
   @Override
   public DriverException copy() {
-    return new NoNodeAvailableException();
+    return new NoNodeAvailableException(getExecutionInfo());
   }
 }

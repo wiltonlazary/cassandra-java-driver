@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ public class ParseUtils {
    * @return the index of the first character in toParse from idx that is not a "space.
    */
   public static int skipSpaces(String toParse, int idx) {
-    while (isBlank(toParse.charAt(idx)) && idx < toParse.length()) ++idx;
+    while (idx < toParse.length() && isBlank(toParse.charAt(idx))) ++idx;
     return idx;
   }
 
@@ -124,11 +124,11 @@ public class ParseUtils {
     throw new IllegalArgumentException();
   }
 
-  private static boolean isBlank(int c) {
+  public static boolean isBlank(int c) {
     return c == ' ' || c == '\t' || c == '\n';
   }
 
-  private static boolean isCqlIdentifierChar(int c) {
+  public static boolean isCqlIdentifierChar(int c) {
     return (c >= '0' && c <= '9')
         || (c >= 'a' && c <= 'z')
         || (c >= 'A' && c <= 'Z')

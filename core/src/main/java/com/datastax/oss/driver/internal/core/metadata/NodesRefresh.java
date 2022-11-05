@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,47 +15,53 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.datastax.oss.driver.api.core.CassandraVersion;
-import com.datastax.oss.driver.api.core.metadata.Node;
-import com.google.common.collect.ImmutableMap;
-import java.net.InetSocketAddress;
+import com.datastax.oss.driver.api.core.Version;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
 import java.util.Collections;
-import java.util.Map;
+import java.util.Objects;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-abstract class NodesRefresh extends MetadataRefresh {
+@ThreadSafe
+abstract class NodesRefresh implements MetadataRefresh {
 
   private static final Logger LOG = LoggerFactory.getLogger(NodesRefresh.class);
 
-  protected NodesRefresh(DefaultMetadata current, String logPrefix) {
-    super(current, logPrefix);
-  }
+  /**
+   * @return whether the node's token have changed as a result of this operation (unfortunately we
+   *     mutate the tokens in-place, so there is no way to check this after the fact).
+   */
+  protected static boolean copyInfos(
+      NodeInfo nodeInfo, DefaultNode node, InternalDriverContext context) {
 
-  /** @return null if the nodes haven't changed */
-  protected abstract Map<InetSocketAddress, Node> computeNewNodes();
-
-  @Override
-  void compute() {
-    Map<InetSocketAddress, Node> newNodes = computeNewNodes();
-    newMetadata = (newNodes == null) ? oldMetadata : new DefaultMetadata(newNodes);
-    // TODO recompute token map (even if node list hasn't changed, b/c tokens might have changed)
-  }
-
-  protected static void copyInfos(NodeInfo nodeInfo, DefaultNode node, String logPrefix) {
-    node.broadcastAddress = nodeInfo.getBroadcastAddress();
-    node.listenAddress = nodeInfo.getListenAddress();
+    node.setEndPoint(nodeInfo.getEndPoint(), context);
+    node.broadcastRpcAddress = nodeInfo.getBroadcastRpcAddress().orElse(null);
+    node.broadcastAddress = nodeInfo.getBroadcastAddress().orElse(null);
+    node.listenAddress = nodeInfo.getListenAddress().orElse(null);
     node.datacenter = nodeInfo.getDatacenter();
     node.rack = nodeInfo.getRack();
+    node.hostId = Objects.requireNonNull(nodeInfo.getHostId());
+    node.schemaVersion = nodeInfo.getSchemaVersion();
     String versionString = nodeInfo.getCassandraVersion();
     try {
-      node.cassandraVersion = CassandraVersion.parse(versionString);
+      node.cassandraVersion = Version.parse(versionString);
     } catch (IllegalArgumentException e) {
-      LOG.warn("[{}] Error converting Cassandra version '{}'", logPrefix, versionString);
+      LOG.warn(
+          "[{}] Error converting Cassandra version '{}' for {}",
+          context.getSessionName(),
+          versionString,
+          node.getEndPoint());
+    }
+    boolean tokensChanged = !node.rawTokens.equals(nodeInfo.getTokens());
+    if (tokensChanged) {
+      node.rawTokens = nodeInfo.getTokens();
     }
     node.extras =
         (nodeInfo.getExtras() == null)
             ? Collections.emptyMap()
             : ImmutableMap.copyOf(nodeInfo.getExtras());
+    return tokensChanged;
   }
 }

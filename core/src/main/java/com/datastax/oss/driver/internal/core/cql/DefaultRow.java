@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,14 +23,18 @@ import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
 import com.datastax.oss.protocol.internal.util.Bytes;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import net.jcip.annotations.Immutable;
 
-public class DefaultRow implements Row {
+@Immutable
+public class DefaultRow implements Row, Serializable {
 
   private final ColumnDefinitions definitions;
   private final List<ByteBuffer> data;
@@ -47,57 +51,97 @@ public class DefaultRow implements Row {
     this(definitions, data, AttachmentPoint.NONE);
   }
 
+  @NonNull
+  @Override
+  public ColumnDefinitions getColumnDefinitions() {
+    return definitions;
+  }
+
   @Override
   public int size() {
     return definitions.size();
   }
 
+  @NonNull
   @Override
   public DataType getType(int i) {
     return definitions.get(i).getType();
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(CqlIdentifier id) {
-    return definitions.firstIndexOf(id);
+  public List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    List<Integer> indices = definitions.allIndicesOf(id);
+    if (indices.isEmpty()) {
+      throw new IllegalArgumentException(id + " is not a column in this row");
+    }
+    return indices;
   }
 
   @Override
-  public DataType getType(CqlIdentifier id) {
+  public int firstIndexOf(@NonNull CqlIdentifier id) {
+    int indexOf = definitions.firstIndexOf(id);
+    if (indexOf == -1) {
+      throw new IllegalArgumentException(id + " is not a column in this row");
+    }
+    return indexOf;
+  }
+
+  @NonNull
+  @Override
+  public DataType getType(@NonNull CqlIdentifier id) {
     return definitions.get(firstIndexOf(id)).getType();
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(String name) {
-    return definitions.firstIndexOf(name);
+  public List<Integer> allIndicesOf(@NonNull String name) {
+    List<Integer> indices = definitions.allIndicesOf(name);
+    if (indices.isEmpty()) {
+      throw new IllegalArgumentException(name + " is not a column in this row");
+    }
+    return indices;
   }
 
   @Override
-  public DataType getType(String name) {
+  public int firstIndexOf(@NonNull String name) {
+    int indexOf = definitions.firstIndexOf(name);
+    if (indexOf == -1) {
+      throw new IllegalArgumentException(name + " is not a column in this row");
+    }
+    return indexOf;
+  }
+
+  @NonNull
+  @Override
+  public DataType getType(@NonNull String name) {
     return definitions.get(firstIndexOf(name)).getType();
   }
 
+  @NonNull
   @Override
   public CodecRegistry codecRegistry() {
-    return attachmentPoint.codecRegistry();
+    return attachmentPoint.getCodecRegistry();
   }
 
+  @NonNull
   @Override
   public ProtocolVersion protocolVersion() {
-    return attachmentPoint.protocolVersion();
+    return attachmentPoint.getProtocolVersion();
   }
 
   @Override
   public boolean isDetached() {
-    return attachmentPoint != AttachmentPoint.NONE;
+    return attachmentPoint == AttachmentPoint.NONE;
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     this.attachmentPoint = attachmentPoint;
     this.definitions.attach(attachmentPoint);
   }
 
+  @Nullable
   @Override
   public ByteBuffer getBytesUnsafe(int i) {
     return data.get(i);
@@ -110,7 +154,8 @@ public class DefaultRow implements Row {
     return new SerializationProxy(this);
   }
 
-  private void readObject(ObjectInputStream stream) throws InvalidObjectException {
+  private void readObject(@SuppressWarnings("unused") ObjectInputStream stream)
+      throws InvalidObjectException {
     // Should never be called since we serialized a proxy
     throw new InvalidObjectException("Proxy required");
   }

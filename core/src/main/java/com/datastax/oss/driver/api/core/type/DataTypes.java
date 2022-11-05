@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,8 +22,9 @@ import com.datastax.oss.driver.internal.core.type.DefaultMapType;
 import com.datastax.oss.driver.internal.core.type.DefaultSetType;
 import com.datastax.oss.driver.internal.core.type.DefaultTupleType;
 import com.datastax.oss.driver.internal.core.type.PrimitiveType;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
-import com.google.common.collect.ImmutableList;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Arrays;
 
 /** Constants and factory methods to obtain data type instances. */
@@ -50,7 +51,8 @@ public class DataTypes {
   public static final DataType TINYINT = new PrimitiveType(ProtocolConstants.DataType.TINYINT);
   public static final DataType DURATION = new PrimitiveType(ProtocolConstants.DataType.DURATION);
 
-  public static DataType custom(String className) {
+  @NonNull
+  public static DataType custom(@NonNull String className) {
     // In protocol v4, duration is implemented as a custom type
     if ("org.apache.cassandra.db.marshal.DurationType".equals(className)) {
       return DURATION;
@@ -59,26 +61,61 @@ public class DataTypes {
     }
   }
 
-  public static ListType listOf(DataType elementType) {
-    // frozen == true is only used in column definitions, it's unlikely that end users will need to
-    // create such instances.
+  @NonNull
+  public static ListType listOf(@NonNull DataType elementType) {
     return new DefaultListType(elementType, false);
   }
 
-  public static SetType setOf(DataType elementType) {
+  @NonNull
+  public static ListType listOf(@NonNull DataType elementType, boolean frozen) {
+    return new DefaultListType(elementType, frozen);
+  }
+
+  @NonNull
+  public static ListType frozenListOf(@NonNull DataType elementType) {
+    return new DefaultListType(elementType, true);
+  }
+
+  @NonNull
+  public static SetType setOf(@NonNull DataType elementType) {
     return new DefaultSetType(elementType, false);
   }
 
-  public static MapType mapOf(DataType keyType, DataType valueType) {
+  @NonNull
+  public static SetType setOf(@NonNull DataType elementType, boolean frozen) {
+    return new DefaultSetType(elementType, frozen);
+  }
+
+  @NonNull
+  public static SetType frozenSetOf(@NonNull DataType elementType) {
+    return new DefaultSetType(elementType, true);
+  }
+
+  @NonNull
+  public static MapType mapOf(@NonNull DataType keyType, @NonNull DataType valueType) {
     return new DefaultMapType(keyType, valueType, false);
+  }
+
+  @NonNull
+  public static MapType mapOf(
+      @NonNull DataType keyType, @NonNull DataType valueType, boolean frozen) {
+    return new DefaultMapType(keyType, valueType, frozen);
+  }
+
+  @NonNull
+  public static MapType frozenMapOf(@NonNull DataType keyType, @NonNull DataType valueType) {
+    return new DefaultMapType(keyType, valueType, true);
   }
 
   /**
    * Builds a new, <em>detached</em> tuple type.
    *
+   * @param componentTypes neither the individual types, nor the vararg array itself, can be {@code
+   *     null}.
    * @see Detachable
    */
-  public static TupleType tupleOf(DataType... componentTypes) {
+  @NonNull
+  public static TupleType tupleOf(@NonNull DataType... componentTypes) {
     return new DefaultTupleType(ImmutableList.copyOf(Arrays.asList(componentTypes)));
   }
 }

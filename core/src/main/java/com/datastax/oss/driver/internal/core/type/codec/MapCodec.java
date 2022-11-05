@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,37 +19,43 @@ import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
-import com.google.common.collect.Maps;
+import com.datastax.oss.driver.shaded.guava.common.collect.Maps;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import net.jcip.annotations.ThreadSafe;
 
-public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
+@ThreadSafe
+public class MapCodec<KeyT, ValueT> implements TypeCodec<Map<KeyT, ValueT>> {
 
   private final DataType cqlType;
-  private final GenericType<Map<K, V>> javaType;
-  private final TypeCodec<K> keyCodec;
-  private final TypeCodec<V> valueCodec;
+  private final GenericType<Map<KeyT, ValueT>> javaType;
+  private final TypeCodec<KeyT> keyCodec;
+  private final TypeCodec<ValueT> valueCodec;
 
-  public MapCodec(DataType cqlType, TypeCodec<K> keyCodec, TypeCodec<V> valueCodec) {
+  public MapCodec(DataType cqlType, TypeCodec<KeyT> keyCodec, TypeCodec<ValueT> valueCodec) {
     this.cqlType = cqlType;
     this.keyCodec = keyCodec;
     this.valueCodec = valueCodec;
     this.javaType = GenericType.mapOf(keyCodec.getJavaType(), valueCodec.getJavaType());
   }
 
+  @NonNull
   @Override
-  public GenericType<Map<K, V>> getJavaType() {
+  public GenericType<Map<KeyT, ValueT>> getJavaType() {
     return javaType;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return cqlType;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     if (value instanceof Map) {
       // runtime type ok, now check key and value types
       Map<?, ?> map = (Map<?, ?>) value;
@@ -63,7 +69,9 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
   }
 
   @Override
-  public ByteBuffer encode(Map<K, V> value, ProtocolVersion protocolVersion) {
+  @Nullable
+  public ByteBuffer encode(
+      @Nullable Map<KeyT, ValueT> value, @NonNull ProtocolVersion protocolVersion) {
     // An int indicating the number of key/value pairs in the map, followed by the pairs. Each pair
     // is a byte array representing the serialized key, preceded by an int indicating its size,
     // followed by the value in the same format.
@@ -73,15 +81,21 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
       int i = 0;
       ByteBuffer[] encodedElements = new ByteBuffer[value.size() * 2];
       int toAllocate = 4; // initialize with number of elements
-      for (Map.Entry<K, V> entry : value.entrySet()) {
+      for (Map.Entry<KeyT, ValueT> entry : value.entrySet()) {
+        if (entry.getKey() == null) {
+          throw new NullPointerException("Map keys cannot be null");
+        }
         if (entry.getValue() == null) {
-          throw new NullPointerException("Collection elements cannot be null");
+          throw new NullPointerException("Map values cannot be null");
         }
         ByteBuffer encodedKey;
         try {
           encodedKey = keyCodec.encode(entry.getKey(), protocolVersion);
         } catch (ClassCastException e) {
           throw new IllegalArgumentException("Invalid type for key: " + entry.getKey().getClass());
+        }
+        if (encodedKey == null) {
+          throw new NullPointerException("Map keys cannot encode to CQL NULL");
         }
         encodedElements[i++] = encodedKey;
         toAllocate += 4 + encodedKey.remaining(); // the key preceded by its size
@@ -91,6 +105,9 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
         } catch (ClassCastException e) {
           throw new IllegalArgumentException(
               "Invalid type for value: " + entry.getValue().getClass());
+        }
+        if (encodedValue == null) {
+          throw new NullPointerException("Map values cannot encode to CQL NULL");
         }
         encodedElements[i++] = encodedValue;
         toAllocate += 4 + encodedValue.remaining(); // the value preceded by its size
@@ -106,42 +123,55 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
     }
   }
 
+  @Nullable
   @Override
-  public Map<K, V> decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public Map<KeyT, ValueT> decode(
+      @Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return new LinkedHashMap<>(0);
     } else {
       ByteBuffer input = bytes.duplicate();
       int size = input.getInt();
-      Map<K, V> result = Maps.newLinkedHashMapWithExpectedSize(size);
+      Map<KeyT, ValueT> result = Maps.newLinkedHashMapWithExpectedSize(size);
       for (int i = 0; i < size; i++) {
+        KeyT key;
         int keySize = input.getInt();
-        ByteBuffer encodedKey = input.slice();
-        encodedKey.limit(keySize);
-        input.position(input.position() + keySize);
-        K key = keyCodec.decode(encodedKey, protocolVersion);
-
+        // Allow null elements on the decode path, because Cassandra might return such collections
+        // for some computed values in the future -- e.g. SELECT ttl(some_collection)
+        if (keySize < 0) {
+          key = null;
+        } else {
+          ByteBuffer encodedKey = input.slice();
+          encodedKey.limit(keySize);
+          key = keyCodec.decode(encodedKey, protocolVersion);
+          input.position(input.position() + keySize);
+        }
+        ValueT value;
         int valueSize = input.getInt();
-        ByteBuffer encodedValue = input.slice();
-        encodedValue.limit(valueSize);
-        input.position(input.position() + valueSize);
-        V value = valueCodec.decode(encodedValue, protocolVersion);
-
+        if (valueSize < 0) {
+          value = null;
+        } else {
+          ByteBuffer encodedValue = input.slice();
+          encodedValue.limit(valueSize);
+          value = valueCodec.decode(encodedValue, protocolVersion);
+          input.position(input.position() + valueSize);
+        }
         result.put(key, value);
       }
       return result;
     }
   }
 
+  @NonNull
   @Override
-  public String format(Map<K, V> value) {
+  public String format(@Nullable Map<KeyT, ValueT> value) {
     if (value == null) {
       return "NULL";
     }
     StringBuilder sb = new StringBuilder();
     sb.append("{");
     boolean first = true;
-    for (Map.Entry<K, V> e : value.entrySet()) {
+    for (Map.Entry<KeyT, ValueT> e : value.entrySet()) {
       if (first) {
         first = false;
       } else {
@@ -155,8 +185,9 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
     return sb.toString();
   }
 
+  @Nullable
   @Override
-  public Map<K, V> parse(String value) {
+  public Map<KeyT, ValueT> parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) {
       return null;
     }
@@ -175,7 +206,7 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
       return new LinkedHashMap<>(0);
     }
 
-    Map<K, V> map = new LinkedHashMap<>();
+    Map<KeyT, ValueT> map = new LinkedHashMap<>();
     while (idx < value.length()) {
       int n;
       try {
@@ -188,7 +219,7 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
             e);
       }
 
-      K k = keyCodec.parse(value.substring(idx, n));
+      KeyT k = keyCodec.parse(value.substring(idx, n));
       idx = n;
 
       idx = ParseUtils.skipSpaces(value, idx);
@@ -210,7 +241,7 @@ public class MapCodec<K, V> implements TypeCodec<Map<K, V>> {
             e);
       }
 
-      V v = valueCodec.parse(value.substring(idx, n));
+      ValueT v = valueCodec.parse(value.substring(idx, n));
       idx = n;
 
       map.put(k, v);

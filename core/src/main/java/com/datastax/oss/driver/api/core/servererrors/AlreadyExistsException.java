@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Thrown when a query attempts to create a keyspace or table that already exists.
@@ -30,13 +33,19 @@ public class AlreadyExistsException extends QueryValidationException {
   private final String keyspace;
   private final String table;
 
-  public AlreadyExistsException(Node coordinator, String keyspace, String table) {
-    this(coordinator, makeMessage(keyspace, table), keyspace, table, false);
+  public AlreadyExistsException(
+      @NonNull Node coordinator, @NonNull String keyspace, @NonNull String table) {
+    this(coordinator, makeMessage(keyspace, table), keyspace, table, null, false);
   }
 
   private AlreadyExistsException(
-      Node coordinator, String message, String keyspace, String table, boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @NonNull String keyspace,
+      @NonNull String table,
+      @Nullable ExecutionInfo executionInfo,
+      boolean writableStackTrace) {
+    super(coordinator, message, executionInfo, writableStackTrace);
     this.keyspace = keyspace;
     this.table = table;
   }
@@ -49,8 +58,10 @@ public class AlreadyExistsException extends QueryValidationException {
     }
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new AlreadyExistsException(getCoordinator(), getMessage(), keyspace, table, true);
+    return new AlreadyExistsException(
+        getCoordinator(), getMessage(), keyspace, table, getExecutionInfo(), true);
   }
 }

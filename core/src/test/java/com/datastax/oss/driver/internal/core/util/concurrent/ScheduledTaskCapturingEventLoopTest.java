@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,13 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+
 import com.datastax.oss.driver.internal.core.util.concurrent.ScheduledTaskCapturingEventLoop.CapturedTask;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class ScheduledTaskCapturingEventLoopTest {
 

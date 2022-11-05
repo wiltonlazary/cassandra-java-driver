@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
+import io.netty.util.concurrent.FastThreadLocalThread;
 import java.util.concurrent.ThreadFactory;
 
 /**
@@ -52,12 +54,12 @@ public class BlockingOperation {
    */
   public static class SafeThreadFactory implements ThreadFactory {
     @Override
-    public Thread newThread(Runnable r) {
+    public Thread newThread(@NonNull Runnable r) {
       return new InternalThread(r);
     }
   }
 
-  private static class InternalThread extends Thread {
+  static class InternalThread extends FastThreadLocalThread {
     private InternalThread(Runnable runnable) {
       super(runnable);
     }

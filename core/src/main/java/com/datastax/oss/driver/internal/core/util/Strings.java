@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 package com.datastax.oss.driver.internal.core.util;
 
-import com.google.common.collect.ImmutableSet;
-import java.util.Set;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableSet;
+import java.util.Locale;
+import java.util.Objects;
 
 public class Strings {
 
@@ -231,8 +233,9 @@ public class Strings {
     return new String(result);
   }
 
-  private static boolean isReservedCqlKeyword(String id) {
-    return id != null && RESERVED_KEYWORDS.contains(id.toLowerCase());
+  @VisibleForTesting
+  static boolean isReservedCqlKeyword(String id) {
+    return id != null && RESERVED_KEYWORDS.contains(id.toLowerCase(Locale.ROOT));
   }
 
   /**
@@ -253,16 +256,30 @@ public class Strings {
     return true;
   }
 
+  /**
+   * Checks whether the given text is not null and not empty.
+   *
+   * @param text The text to check.
+   * @param name The name of the argument.
+   * @return The text (for method chaining).
+   */
+  public static String requireNotEmpty(String text, String name) {
+    Objects.requireNonNull(text, name + " cannot be null");
+    if (text.isEmpty()) {
+      throw new IllegalArgumentException(name + " cannot be empty");
+    }
+    return text;
+  }
+
   private Strings() {}
 
-  private static final Set<String> RESERVED_KEYWORDS =
+  private static final ImmutableSet<String> RESERVED_KEYWORDS =
       ImmutableSet.of(
           // See https://github.com/apache/cassandra/blob/trunk/doc/cql3/CQL.textile#appendixA
           "add",
           "allow",
           "alter",
           "and",
-          "any",
           "apply",
           "asc",
           "authorize",
@@ -271,34 +288,40 @@ public class Strings {
           "by",
           "columnfamily",
           "create",
+          "default",
           "delete",
           "desc",
+          "describe",
           "drop",
-          "each_quorum",
+          "entries",
+          "execute",
           "from",
+          "full",
           "grant",
+          "if",
           "in",
           "index",
-          "inet",
           "infinity",
           "insert",
           "into",
+          "is",
           "keyspace",
-          "keyspaces",
           "limit",
-          "local_one",
-          "local_quorum",
+          "materialized",
+          "mbean",
+          "mbeans",
           "modify",
           "nan",
           "norecursive",
+          "not",
+          "null",
           "of",
           "on",
-          "one",
+          "or",
           "order",
-          "password",
           "primary",
-          "quorum",
           "rename",
+          "replace",
           "revoke",
           "schema",
           "select",
@@ -306,13 +329,13 @@ public class Strings {
           "table",
           "to",
           "token",
-          "three",
           "truncate",
-          "two",
           "unlogged",
+          "unset",
           "update",
           "use",
           "using",
+          "view",
           "where",
           "with");
 }

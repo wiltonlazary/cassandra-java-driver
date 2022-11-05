@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package com.datastax.oss.driver.api.core.addresstranslation;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.net.InetSocketAddress;
 
 /**
@@ -40,7 +41,8 @@ public interface AddressTranslator extends AutoCloseable {
    * Translates an address reported by a Cassandra node into the address that the driver will use to
    * connect.
    */
-  InetSocketAddress translate(InetSocketAddress address);
+  @NonNull
+  InetSocketAddress translate(@NonNull InetSocketAddress address);
 
   /** Called when the cluster that this translator is associated with closes. */
   @Override

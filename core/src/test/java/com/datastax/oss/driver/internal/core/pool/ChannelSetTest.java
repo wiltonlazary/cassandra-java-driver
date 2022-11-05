@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
  */
 package com.datastax.oss.driver.internal.core.pool;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.Mockito.never;
 
 public class ChannelSetTest {
   @Mock private DriverChannel channel1, channel2, channel3;
@@ -43,21 +44,39 @@ public class ChannelSetTest {
 
   @Test
   public void should_return_element_when_single() {
+    // Given
+    when(channel1.preAcquireId()).thenReturn(true);
+
     // When
     set.add(channel1);
 
     // Then
     assertThat(set.size()).isEqualTo(1);
     assertThat(set.next()).isEqualTo(channel1);
-    Mockito.verify(channel1, never()).availableIds();
+    verify(channel1, never()).getAvailableIds();
+    verify(channel1).preAcquireId();
+  }
+
+  @Test
+  public void should_return_null_when_single_but_full() {
+    // Given
+    when(channel1.preAcquireId()).thenReturn(false);
+
+    // When
+    set.add(channel1);
+
+    // Then
+    assertThat(set.next()).isNull();
+    verify(channel1).preAcquireId();
   }
 
   @Test
   public void should_return_most_available_when_multiple() {
     // Given
-    Mockito.when(channel1.availableIds()).thenReturn(2);
-    Mockito.when(channel2.availableIds()).thenReturn(12);
-    Mockito.when(channel3.availableIds()).thenReturn(8);
+    when(channel1.getAvailableIds()).thenReturn(2);
+    when(channel2.getAvailableIds()).thenReturn(12);
+    when(channel3.getAvailableIds()).thenReturn(8);
+    when(channel2.preAcquireId()).thenReturn(true);
 
     // When
     set.add(channel1);
@@ -67,23 +86,43 @@ public class ChannelSetTest {
     // Then
     assertThat(set.size()).isEqualTo(3);
     assertThat(set.next()).isEqualTo(channel2);
-    Mockito.verify(channel1).availableIds();
-    Mockito.verify(channel2).availableIds();
-    Mockito.verify(channel3).availableIds();
+    verify(channel1).getAvailableIds();
+    verify(channel2).getAvailableIds();
+    verify(channel3).getAvailableIds();
+    verify(channel2).preAcquireId();
 
     // When
-    Mockito.when(channel1.availableIds()).thenReturn(15);
+    when(channel1.getAvailableIds()).thenReturn(15);
+    when(channel1.preAcquireId()).thenReturn(true);
 
     // Then
     assertThat(set.next()).isEqualTo(channel1);
+    verify(channel1).preAcquireId();
+  }
+
+  @Test
+  public void should_return_null_when_multiple_but_all_full() {
+    // Given
+    when(channel1.getAvailableIds()).thenReturn(0);
+    when(channel2.getAvailableIds()).thenReturn(0);
+    when(channel3.getAvailableIds()).thenReturn(0);
+
+    // When
+    set.add(channel1);
+    set.add(channel2);
+    set.add(channel3);
+
+    // Then
+    assertThat(set.next()).isNull();
   }
 
   @Test
   public void should_remove_channels() {
     // Given
-    Mockito.when(channel1.availableIds()).thenReturn(2);
-    Mockito.when(channel2.availableIds()).thenReturn(12);
-    Mockito.when(channel3.availableIds()).thenReturn(8);
+    when(channel1.getAvailableIds()).thenReturn(2);
+    when(channel2.getAvailableIds()).thenReturn(12);
+    when(channel3.getAvailableIds()).thenReturn(8);
+    when(channel2.preAcquireId()).thenReturn(true);
 
     set.add(channel1);
     set.add(channel2);
@@ -92,6 +131,7 @@ public class ChannelSetTest {
 
     // When
     set.remove(channel2);
+    when(channel3.preAcquireId()).thenReturn(true);
 
     // Then
     assertThat(set.size()).isEqualTo(2);
@@ -99,6 +139,7 @@ public class ChannelSetTest {
 
     // When
     set.remove(channel3);
+    when(channel1.preAcquireId()).thenReturn(true);
 
     // Then
     assertThat(set.size()).isEqualTo(1);
@@ -109,6 +150,28 @@ public class ChannelSetTest {
 
     // Then
     assertThat(set.size()).isEqualTo(0);
+    assertThat(set.next()).isNull();
+  }
+
+  /**
+   * Check that {@link ChannelSet#next()} doesn't spin forever if it keeps racing (see comments in
+   * the implementation).
+   */
+  @Test
+  public void should_not_loop_indefinitely_if_acquisition_keeps_failing() {
+    // Given
+    when(channel1.getAvailableIds()).thenReturn(2);
+    when(channel2.getAvailableIds()).thenReturn(12);
+    when(channel3.getAvailableIds()).thenReturn(8);
+    // channel2 is the most available but we keep failing to acquire (simulating the race condition)
+    when(channel2.preAcquireId()).thenReturn(false);
+
+    // When
+    set.add(channel1);
+    set.add(channel2);
+    set.add(channel3);
+
+    // Then
     assertThat(set.next()).isNull();
   }
 }

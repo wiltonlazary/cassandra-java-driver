@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,23 @@
 package com.datastax.oss.driver.api.core.type;
 
 import com.datastax.oss.protocol.internal.ProtocolConstants;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 public interface CustomType extends DataType {
   /**
    * The fully qualified name of the subtype of {@code org.apache.cassandra.db.marshal.AbstractType}
    * that represents this type server-side.
    */
+  @NonNull
   String getClassName();
 
+  @NonNull
+  @Override
+  default String asCql(boolean includeFrozen, boolean pretty) {
+    return String.format("'%s'", getClassName());
+  }
+
+  @Override
   default int getProtocolCode() {
     return ProtocolConstants.DataType.CUSTOM;
   }

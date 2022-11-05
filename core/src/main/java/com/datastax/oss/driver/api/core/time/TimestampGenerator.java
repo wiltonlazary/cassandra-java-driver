@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,14 @@
  */
 package com.datastax.oss.driver.api.core.time;
 
+import com.datastax.oss.driver.api.core.cql.Statement;
+
 /**
  * Generates client-side, microsecond-precision query timestamps.
  *
  * <p>These timestamps are used to order queries server-side, and resolve potential conflicts.
  */
-public interface TimestampGenerator {
+public interface TimestampGenerator extends AutoCloseable {
 
   /**
    * Returns the next timestamp, in <b>microseconds</b>.
@@ -31,8 +33,9 @@ public interface TimestampGenerator {
    * returned value if the clock tick hasn't changed, and possibly drifting in the future. See the
    * built-in driver implementations for more details.
    *
-   * @return the next timestamp, or {@link Long#MIN_VALUE} to indicate that the driver should not
-   *     send one with the query (and let Cassandra generate a server-side timestamp).
+   * @return the next timestamp, or {@link Statement#NO_DEFAULT_TIMESTAMP} to indicate that the
+   *     driver should not send one with the query (and let Cassandra generate a server-side
+   *     timestamp).
    */
   long next();
 }

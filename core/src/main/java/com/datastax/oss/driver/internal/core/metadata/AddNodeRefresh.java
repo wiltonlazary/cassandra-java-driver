@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,33 +16,52 @@
 package com.datastax.oss.driver.internal.core.metadata;
 
 import com.datastax.oss.driver.api.core.metadata.Node;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
-import java.net.InetSocketAddress;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
 import java.util.Map;
+import java.util.UUID;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class AddNodeRefresh extends NodesRefresh {
 
   @VisibleForTesting final NodeInfo newNodeInfo;
 
-  AddNodeRefresh(DefaultMetadata oldMetadata, NodeInfo newNodeInfo, String logPrefix) {
-    super(oldMetadata, logPrefix);
+  AddNodeRefresh(NodeInfo newNodeInfo) {
     this.newNodeInfo = newNodeInfo;
   }
 
   @Override
-  protected Map<InetSocketAddress, Node> computeNewNodes() {
-    Map<InetSocketAddress, Node> oldNodes = oldMetadata.getNodes();
-    if (oldNodes.containsKey(newNodeInfo.getConnectAddress())) {
-      return oldNodes;
+  public Result compute(
+      DefaultMetadata oldMetadata, boolean tokenMapEnabled, InternalDriverContext context) {
+    Map<UUID, Node> oldNodes = oldMetadata.getNodes();
+    Node existing = oldNodes.get(newNodeInfo.getHostId());
+    if (existing == null) {
+      DefaultNode newNode = new DefaultNode(newNodeInfo.getEndPoint(), context);
+      copyInfos(newNodeInfo, newNode, context);
+      Map<UUID, Node> newNodes =
+          ImmutableMap.<UUID, Node>builder()
+              .putAll(oldNodes)
+              .put(newNode.getHostId(), newNode)
+              .build();
+      return new Result(
+          oldMetadata.withNodes(newNodes, tokenMapEnabled, false, null, context),
+          ImmutableList.of(NodeStateEvent.added(newNode)));
     } else {
-      DefaultNode newNode = new DefaultNode(newNodeInfo.getConnectAddress());
-      copyInfos(newNodeInfo, newNode, logPrefix);
-      events.add(NodeStateEvent.added(newNode));
-      return ImmutableMap.<InetSocketAddress, Node>builder()
-          .putAll(oldNodes)
-          .put(newNode.getConnectAddress(), newNode)
-          .build();
+      // If a node is restarted after changing its broadcast RPC address, Cassandra considers that
+      // an addition, even though the host_id hasn't changed :(
+      // Update the existing instance and emit an UP event to trigger a pool reconnection.
+      if (!existing.getEndPoint().equals(newNodeInfo.getEndPoint())) {
+        copyInfos(newNodeInfo, ((DefaultNode) existing), context);
+        assert newNodeInfo.getBroadcastRpcAddress().isPresent(); // always for peer nodes
+        return new Result(
+            oldMetadata,
+            ImmutableList.of(TopologyEvent.suggestUp(newNodeInfo.getBroadcastRpcAddress().get())));
+      } else {
+        return new Result(oldMetadata);
+      }
     }
   }
 }

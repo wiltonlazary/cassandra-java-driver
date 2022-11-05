@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,52 +15,31 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
-import com.datastax.oss.driver.api.core.ProtocolVersion;
-import com.datastax.oss.driver.api.core.type.DataType;
-import com.datastax.oss.driver.api.core.type.DataTypes;
-import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
+import com.datastax.oss.driver.api.core.type.codec.MappingCodec;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
-import java.nio.ByteBuffer;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * A sample user codec implementation that we use in our tests.
  *
  * <p>It maps a CQL string to a Java string containing its textual representation.
  */
-public class CqlIntToStringCodec implements TypeCodec<String> {
+public class CqlIntToStringCodec extends MappingCodec<Integer, String> {
 
-  @Override
-  public GenericType<String> getJavaType() {
-    return GenericType.STRING;
+  public CqlIntToStringCodec() {
+    super(TypeCodecs.INT, GenericType.STRING);
   }
 
+  @Nullable
   @Override
-  public DataType getCqlType() {
-    return DataTypes.INT;
+  protected String innerToOuter(@Nullable Integer value) {
+    return value == null ? null : value.toString();
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(String value, ProtocolVersion protocolVersion) {
-    if (value == null) {
-      return null;
-    } else {
-      return TypeCodecs.INT.encode(Integer.parseInt(value), protocolVersion);
-    }
-  }
-
-  @Override
-  public String decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
-    return TypeCodecs.INT.decode(bytes, protocolVersion).toString();
-  }
-
-  @Override
-  public String format(String value) {
-    throw new UnsupportedOperationException("Not implemented for this test");
-  }
-
-  @Override
-  public String parse(String value) {
-    throw new UnsupportedOperationException("Not implemented for this test");
+  protected Integer outerToInner(@Nullable String value) {
+    return value == null ? null : Integer.parseInt(value);
   }
 }

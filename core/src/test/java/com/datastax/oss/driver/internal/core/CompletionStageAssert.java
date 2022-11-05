@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,16 @@
  */
 package com.datastax.oss.driver.internal.core;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import org.assertj.core.api.AbstractAssert;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 public class CompletionStageAssert<V>
     extends AbstractAssert<CompletionStageAssert<V>, CompletionStage<V>> {
@@ -34,7 +35,7 @@ public class CompletionStageAssert<V>
 
   public CompletionStageAssert<V> isSuccess(Consumer<V> valueAssertions) {
     try {
-      V value = actual.toCompletableFuture().get(100, TimeUnit.MILLISECONDS);
+      V value = actual.toCompletableFuture().get(2, TimeUnit.SECONDS);
       valueAssertions.accept(value);
     } catch (TimeoutException e) {
       fail("Future did not complete within the timeout");
@@ -50,7 +51,7 @@ public class CompletionStageAssert<V>
 
   public CompletionStageAssert<V> isFailed(Consumer<Throwable> failureAssertions) {
     try {
-      actual.toCompletableFuture().get(100, TimeUnit.MILLISECONDS);
+      actual.toCompletableFuture().get(2, TimeUnit.SECONDS);
       fail("Expected completion stage to fail");
     } catch (TimeoutException e) {
       fail("Future did not complete within the timeout");
@@ -66,8 +67,45 @@ public class CompletionStageAssert<V>
     return isFailed(f -> {});
   }
 
+  public CompletionStageAssert<V> isCancelled() {
+    boolean cancelled = false;
+    try {
+      actual.toCompletableFuture().get(2, TimeUnit.SECONDS);
+    } catch (CancellationException e) {
+      cancelled = true;
+    } catch (Exception ignored) {
+    }
+    if (!cancelled) {
+      fail("Expected completion stage to be cancelled");
+    }
+    return this;
+  }
+
+  public CompletionStageAssert<V> isNotCancelled() {
+    boolean cancelled = false;
+    try {
+      actual.toCompletableFuture().get(2, TimeUnit.SECONDS);
+    } catch (CancellationException e) {
+      cancelled = true;
+    } catch (Exception ignored) {
+    }
+    if (cancelled) {
+      fail("Expected completion stage not to be cancelled");
+    }
+    return this;
+  }
+
+  public CompletionStageAssert<V> isDone() {
+    assertThat(actual.toCompletableFuture().isDone())
+        .overridingErrorMessage("Expected completion stage to be done")
+        .isTrue();
+    return this;
+  }
+
   public CompletionStageAssert<V> isNotDone() {
-    assertThat(actual.toCompletableFuture().isDone()).isFalse();
+    assertThat(actual.toCompletableFuture().isDone())
+        .overridingErrorMessage("Expected completion stage not to be done")
+        .isFalse();
     return this;
   }
 }

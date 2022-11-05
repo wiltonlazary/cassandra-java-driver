@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,15 @@
 package com.datastax.oss.driver.internal.core.pool;
 
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterators;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.Iterators;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.concurrent.locks.ReentrantLock;
+import net.jcip.annotations.ThreadSafe;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Concurrent structure used to store the channels of a pool.
@@ -28,9 +32,19 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>Its write semantics are similar to "copy-on-write" JDK collections, selection operations are
  * expected to vastly outnumber mutations.
  */
+@ThreadSafe
 class ChannelSet implements Iterable<DriverChannel> {
+
+  private static final Logger LOG = LoggerFactory.getLogger(ChannelSet.class);
+  /**
+   * The maximum number of iterations in the busy wait loop in {@link #next()} when there are
+   * multiple channels. This is a backstop to protect against thread starvation, in practice we've
+   * never observed more than 3 iterations in tests.
+   */
+  private static final int MAX_ITERATIONS = 50;
+
   private volatile DriverChannel[] channels;
-  private ReentrantLock lock = new ReentrantLock(); // must be held when mutating the array
+  private final ReentrantLock lock = new ReentrantLock(); // must be held when mutating the array
 
   ChannelSet() {
     this.channels = new DriverChannel[] {};
@@ -80,25 +94,72 @@ class ChannelSet implements Iterable<DriverChannel> {
       case 0:
         return null;
       case 1:
-        return snapshot[0];
+        DriverChannel onlyChannel = snapshot[0];
+        return onlyChannel.preAcquireId() ? onlyChannel : null;
       default:
-        DriverChannel best = null;
-        int bestScore = 0;
-        for (DriverChannel channel : snapshot) {
-          int score = channel.availableIds();
-          if (score > bestScore) {
-            bestScore = score;
-            best = channel;
+        for (int i = 0; i < MAX_ITERATIONS; i++) {
+          DriverChannel best = null;
+          int bestScore = 0;
+          for (DriverChannel channel : snapshot) {
+            int score = channel.getAvailableIds();
+            if (score > bestScore) {
+              bestScore = score;
+              best = channel;
+            }
+          }
+          if (best == null) {
+            return null;
+          } else if (best.preAcquireId()) {
+            return best;
           }
         }
-        return best;
+        LOG.trace("Could not select a channel after {} iterations", MAX_ITERATIONS);
+        return null;
     }
+  }
+
+  /** @return the number of available stream ids on all channels in this channel set. */
+  int getAvailableIds() {
+    int availableIds = 0;
+    DriverChannel[] snapshot = this.channels;
+    for (DriverChannel channel : snapshot) {
+      availableIds += channel.getAvailableIds();
+    }
+    return availableIds;
+  }
+
+  /**
+   * @return the number of requests currently executing on all channels in this channel set
+   *     (including {@link #getOrphanedIds() orphaned ids}).
+   */
+  int getInFlight() {
+    int inFlight = 0;
+    DriverChannel[] snapshot = this.channels;
+    for (DriverChannel channel : snapshot) {
+      inFlight += channel.getInFlight();
+    }
+    return inFlight;
+  }
+
+  /**
+   * @return the number of stream ids for requests in all channels in this channel set that have
+   *     either timed out or been cancelled, but for which we can't release the stream id because a
+   *     request might still come from the server.
+   */
+  int getOrphanedIds() {
+    int orphanedIds = 0;
+    DriverChannel[] snapshot = this.channels;
+    for (DriverChannel channel : snapshot) {
+      orphanedIds += channel.getOrphanedIds();
+    }
+    return orphanedIds;
   }
 
   int size() {
     return this.channels.length;
   }
 
+  @NonNull
   @Override
   public Iterator<DriverChannel> iterator() {
     return Iterators.forArray(this.channels);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import com.datastax.oss.driver.api.core.cql.ResultSet;
 
 public class ResultSets {
   public static ResultSet newInstance(AsyncResultSet firstPage) {
-    return (firstPage.hasMorePages())
+    return firstPage.hasMorePages()
         ? new MultiPageResultSet(firstPage)
         : new SinglePageResultSet(firstPage);
   }

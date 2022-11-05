@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,23 +17,35 @@ package com.datastax.oss.driver.api.core.detach;
 
 import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import com.datastax.oss.driver.api.core.type.codec.registry.MutableCodecRegistry;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /** @see Detachable */
 public interface AttachmentPoint {
   AttachmentPoint NONE =
       new AttachmentPoint() {
+        @NonNull
         @Override
-        public ProtocolVersion protocolVersion() {
+        public ProtocolVersion getProtocolVersion() {
           return ProtocolVersion.DEFAULT;
         }
 
+        @NonNull
         @Override
-        public CodecRegistry codecRegistry() {
+        public CodecRegistry getCodecRegistry() {
           return CodecRegistry.DEFAULT;
         }
       };
 
-  ProtocolVersion protocolVersion();
+  @NonNull
+  ProtocolVersion getProtocolVersion();
 
-  CodecRegistry codecRegistry();
+  /**
+   * Note that the default registry implementation returned by the driver also implements {@link
+   * MutableCodecRegistry}, which allows you to register new codecs at runtime. You can safely cast
+   * the result of this method (as long as you didn't extend the driver context to plug a custom
+   * registry implementation).
+   */
+  @NonNull
+  CodecRegistry getCodecRegistry();
 }

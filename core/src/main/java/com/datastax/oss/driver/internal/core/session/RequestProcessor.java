@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package com.datastax.oss.driver.internal.core.session;
 import com.datastax.oss.driver.api.core.cql.PrepareRequest;
 import com.datastax.oss.driver.api.core.cql.Statement;
 import com.datastax.oss.driver.api.core.session.Request;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 
 /**
@@ -26,23 +27,26 @@ import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
  * <p>By default, the driver supports CQL {@link Statement queries} and {@link PrepareRequest
  * preparation requests}. New processors can be plugged in to handle new types of requests.
  *
- * @param <SyncResultT> the type of result when a request is executed synchronously.
- * @param <AsyncResultT> the type of result when a request is executed asynchronously.
+ * @param <RequestT> the type of request accepted.
+ * @param <ResultT> the type of result when a request is processed.
  */
-public interface RequestProcessor<SyncResultT, AsyncResultT> {
+public interface RequestProcessor<RequestT extends Request, ResultT> {
 
   /**
-   * Whether the processor can handle a given request.
+   * Whether the processor can produce the given result from the given request.
    *
    * <p>Processors will be tried in the order they were registered. The first processor for which
    * this method returns true will be used.
    */
-  boolean canProcess(Request<?, ?> request);
+  boolean canProcess(Request request, GenericType<?> resultType);
 
-  /** Builds a new handler to process a given request. */
-  RequestHandler<SyncResultT, AsyncResultT> newHandler(
-      Request<SyncResultT, AsyncResultT> request,
+  /** Processes the given request, producing a result. */
+  ResultT process(
+      RequestT request,
       DefaultSession session,
       InternalDriverContext context,
       String sessionLogPrefix);
+
+  /** Builds a failed result to directly report the given error. */
+  ResultT newFailure(RuntimeException error);
 }

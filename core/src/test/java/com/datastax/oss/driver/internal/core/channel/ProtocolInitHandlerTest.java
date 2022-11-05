@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,36 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
 import com.datastax.oss.driver.api.core.CqlIdentifier;
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
 import com.datastax.oss.driver.api.core.InvalidKeyspaceException;
 import com.datastax.oss.driver.api.core.auth.AuthProvider;
 import com.datastax.oss.driver.api.core.auth.AuthenticationException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
-import com.datastax.oss.driver.api.core.config.DriverConfigProfile;
-import com.datastax.oss.driver.internal.core.CassandraProtocolVersionRegistry;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import com.datastax.oss.driver.internal.core.DefaultProtocolVersionRegistry;
 import com.datastax.oss.driver.internal.core.ProtocolVersionRegistry;
 import com.datastax.oss.driver.internal.core.TestResponses;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metadata.TestNodeFactory;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
 import com.datastax.oss.protocol.internal.request.AuthResponse;
+import com.datastax.oss.protocol.internal.request.Options;
 import com.datastax.oss.protocol.internal.request.Query;
 import com.datastax.oss.protocol.internal.request.Register;
 import com.datastax.oss.protocol.internal.request.Startup;
@@ -40,30 +55,35 @@ import com.datastax.oss.protocol.internal.response.Error;
 import com.datastax.oss.protocol.internal.response.Ready;
 import com.datastax.oss.protocol.internal.response.result.SetKeyspace;
 import com.datastax.oss.protocol.internal.util.Bytes;
-import com.google.common.collect.ImmutableList;
 import io.netty.channel.ChannelFuture;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.ConcurrentModificationException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
+import org.slf4j.LoggerFactory;
 
 public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
 
   private static final long QUERY_TIMEOUT_MILLIS = 100L;
+  // The handled only uses this to call the auth provider and for exception messages, so the actual
+  // value doesn't matter:
+  private static final EndPoint END_POINT = TestNodeFactory.newEndPoint(1);
 
   @Mock private InternalDriverContext internalDriverContext;
   @Mock private DriverConfig driverConfig;
-  @Mock private DriverConfigProfile defaultConfigProfile;
+  @Mock private DriverExecutionProfile defaultProfile;
+  @Mock private Appender<ILoggingEvent> appender;
+
   private ProtocolVersionRegistry protocolVersionRegistry =
-      new CassandraProtocolVersionRegistry("test");
+      new DefaultProtocolVersionRegistry("test");
   private HeartbeatHandler heartbeatHandler;
 
   @Before
@@ -71,52 +91,96 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
   public void setup() {
     super.setup();
     MockitoAnnotations.initMocks(this);
-    Mockito.when(internalDriverContext.config()).thenReturn(driverConfig);
-    Mockito.when(driverConfig.getDefaultProfile()).thenReturn(defaultConfigProfile);
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.CONNECTION_INIT_QUERY_TIMEOUT))
+    when(internalDriverContext.getConfig()).thenReturn(driverConfig);
+    when(driverConfig.getDefaultProfile()).thenReturn(defaultProfile);
+    when(defaultProfile.getDuration(DefaultDriverOption.CONNECTION_INIT_QUERY_TIMEOUT))
         .thenReturn(Duration.ofMillis(QUERY_TIMEOUT_MILLIS));
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.CONNECTION_HEARTBEAT_INTERVAL))
-        .thenReturn(Duration.ofMillis(30000));
-    Mockito.when(internalDriverContext.protocolVersionRegistry())
-        .thenReturn(protocolVersionRegistry);
+    when(defaultProfile.getDuration(DefaultDriverOption.HEARTBEAT_INTERVAL))
+        .thenReturn(Duration.ofSeconds(30));
+    when(internalDriverContext.getProtocolVersionRegistry()).thenReturn(protocolVersionRegistry);
 
     channel
         .pipeline()
         .addLast(
-            "inflight",
+            ChannelFactory.INFLIGHT_HANDLER_NAME,
             new InFlightHandler(
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 new StreamIdGenerator(100),
                 Integer.MAX_VALUE,
                 100,
-                null,
                 channel.newPromise(),
                 null,
                 "test"));
 
-    heartbeatHandler = new HeartbeatHandler(defaultConfigProfile);
+    heartbeatHandler = new HeartbeatHandler(defaultProfile);
   }
 
   @Test
-  public void should_initialize_without_authentication() {
+  public void should_initialize() {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
     // It should send a STARTUP message
     Frame requestFrame = readOutboundFrame();
     assertThat(requestFrame.message).isInstanceOf(Startup.class);
-    Startup startup = (Startup) requestFrame.message;
-    assertThat(startup.options).doesNotContainKey("COMPRESSION");
+    assertThat(connectFuture).isNotDone();
+
+    // Simulate a READY response
+    writeInboundFrame(buildInboundFrame(requestFrame, new Ready()));
+
+    // Simulate the cluster name check
+    requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Query.class);
+    writeInboundFrame(requestFrame, TestResponses.clusterNameResponse("someClusterName"));
+
+    // Init should complete
+    assertThat(connectFuture).isSuccess();
+  }
+
+  @Test
+  public void should_query_supported_options() {
+    channel
+        .pipeline()
+        .addLast(
+            ChannelFactory.INIT_HANDLER_NAME,
+            new ProtocolInitHandler(
+                internalDriverContext,
+                DefaultProtocolVersion.V4,
+                null,
+                END_POINT,
+                DriverChannelOptions.DEFAULT,
+                heartbeatHandler,
+                true));
+
+    ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
+
+    // It should send an OPTIONS message
+    Frame requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Options.class);
+    assertThat(connectFuture).isNotDone();
+
+    // Simulate the SUPPORTED response
+    writeInboundFrame(requestFrame, TestResponses.supportedResponse("mock_key", "mock_value"));
+
+    Map<String, List<String>> supportedOptions = channel.attr(DriverChannel.OPTIONS_KEY).get();
+    assertThat(supportedOptions).containsKey("mock_key");
+    assertThat(supportedOptions.get("mock_key")).containsOnly("mock_value");
+
+    // It should send a STARTUP message
+    requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Startup.class);
     assertThat(connectFuture).isNotDone();
 
     // Simulate a READY response
@@ -136,23 +200,23 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     ProtocolInitHandler protocolInitHandler =
         new ProtocolInitHandler(
             internalDriverContext,
-            CoreProtocolVersion.V4,
+            DefaultProtocolVersion.V4,
             null,
+            END_POINT,
             DriverChannelOptions.DEFAULT,
-            heartbeatHandler);
+            heartbeatHandler,
+            false);
 
-    channel.pipeline().addLast("init", protocolInitHandler);
+    channel.pipeline().addLast(ChannelFactory.INIT_HANDLER_NAME, protocolInitHandler);
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
     // heartbeat should initially not be in pipeline
-    assertThat(channel.pipeline().get("heartbeat")).isNull();
+    assertThat(channel.pipeline().get(ChannelFactory.HEARTBEAT_HANDLER_NAME)).isNull();
 
     // It should send a STARTUP message
     Frame requestFrame = readOutboundFrame();
     assertThat(requestFrame.message).isInstanceOf(Startup.class);
-    Startup startup = (Startup) requestFrame.message;
-    assertThat(startup.options).doesNotContainKey("COMPRESSION");
     assertThat(connectFuture).isNotDone();
 
     // Simulate a READY response
@@ -167,7 +231,8 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     assertThat(connectFuture).isSuccess();
 
     // should have added heartbeat handler to pipeline.
-    assertThat(channel.pipeline().get("heartbeat")).isEqualTo(heartbeatHandler);
+    assertThat(channel.pipeline().get(ChannelFactory.HEARTBEAT_HANDLER_NAME))
+        .isEqualTo(heartbeatHandler);
     // should have removed itself from pipeline.
     assertThat(channel.pipeline().last()).isNotEqualTo(protocolInitHandler);
   }
@@ -177,13 +242,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -201,20 +268,21 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     String serverAuthenticator = "mockServerAuthenticator";
-    AuthProvider authProvider = Mockito.mock(AuthProvider.class);
+    AuthProvider authProvider = mock(AuthProvider.class);
     MockAuthenticator authenticator = new MockAuthenticator();
-    Mockito.when(authProvider.newAuthenticator(channel.remoteAddress(), serverAuthenticator))
-        .thenReturn(authenticator);
-    Mockito.when(internalDriverContext.authProvider()).thenReturn(Optional.of(authProvider));
+    when(authProvider.newAuthenticator(END_POINT, serverAuthenticator)).thenReturn(authenticator);
+    when(internalDriverContext.getAuthProvider()).thenReturn(Optional.of(authProvider));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -226,7 +294,7 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     writeInboundFrame(requestFrame, new Authenticate(serverAuthenticator));
 
     // The connection should have created an authenticator from the auth provider
-    Mockito.verify(authProvider).newAuthenticator(channel.remoteAddress(), serverAuthenticator);
+    verify(authProvider).newAuthenticator(END_POINT, serverAuthenticator);
 
     // And sent an auth response
     requestFrame = readOutboundFrame();
@@ -235,7 +303,8 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     assertThat(Bytes.toHexString(authResponse.token)).isEqualTo(MockAuthenticator.INITIAL_RESPONSE);
     assertThat(connectFuture).isNotDone();
 
-    // As long as the server sends an auth challenge, the client should reply with another auth_response
+    // As long as the server sends an auth challenge, the client should reply with another
+    // auth_response
     String mockToken = "0xabcd";
     for (int i = 0; i < 5; i++) {
       writeInboundFrame(requestFrame, new AuthChallenge(Bytes.fromHexString(mockToken)));
@@ -248,7 +317,8 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
       assertThat(connectFuture).isNotDone();
     }
 
-    // When the server finally sends back a success message, should proceed to the cluster name check and succeed
+    // When the server finally sends back a success message, should proceed to the cluster name
+    // check and succeed
     writeInboundFrame(requestFrame, new AuthSuccess(Bytes.fromHexString(mockToken)));
     assertThat(authenticator.successToken).isEqualTo(mockToken);
 
@@ -259,24 +329,59 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
   }
 
   @Test
+  public void should_invoke_auth_provider_when_server_does_not_send_challenge() {
+    channel
+        .pipeline()
+        .addLast(
+            ChannelFactory.INIT_HANDLER_NAME,
+            new ProtocolInitHandler(
+                internalDriverContext,
+                DefaultProtocolVersion.V4,
+                null,
+                END_POINT,
+                DriverChannelOptions.DEFAULT,
+                heartbeatHandler,
+                false));
+
+    AuthProvider authProvider = mock(AuthProvider.class);
+    when(internalDriverContext.getAuthProvider()).thenReturn(Optional.of(authProvider));
+
+    ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
+
+    Frame requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Startup.class);
+
+    // Simulate a READY response, the provider should be notified
+    writeInboundFrame(buildInboundFrame(requestFrame, new Ready()));
+    verify(authProvider).onMissingChallenge(END_POINT);
+
+    // Since our mock does nothing, init should proceed normally
+    requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Query.class);
+    writeInboundFrame(requestFrame, TestResponses.clusterNameResponse("someClusterName"));
+    assertThat(connectFuture).isSuccess();
+  }
+
+  @Test
   public void should_fail_to_initialize_if_server_sends_auth_error() throws Throwable {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     String serverAuthenticator = "mockServerAuthenticator";
-    AuthProvider authProvider = Mockito.mock(AuthProvider.class);
+    AuthProvider authProvider = mock(AuthProvider.class);
     MockAuthenticator authenticator = new MockAuthenticator();
-    Mockito.when(authProvider.newAuthenticator(channel.remoteAddress(), serverAuthenticator))
-        .thenReturn(authenticator);
-    Mockito.when(internalDriverContext.authProvider()).thenReturn(Optional.of(authProvider));
+    when(authProvider.newAuthenticator(END_POINT, serverAuthenticator)).thenReturn(authenticator);
+    when(internalDriverContext.getAuthProvider()).thenReturn(Optional.of(authProvider));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -299,7 +404,9 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
                 assertThat(e)
                     .isInstanceOf(AuthenticationException.class)
                     .hasMessage(
-                        "Authentication error on host embedded: server replied 'mock error'"));
+                        String.format(
+                            "Authentication error on node %s: server replied with 'mock error' to AuthResponse request",
+                            END_POINT)));
   }
 
   @Test
@@ -307,13 +414,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 "expectedClusterName",
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -336,13 +445,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 "expectedClusterName",
+                END_POINT,
                 DriverChannelOptions.DEFAULT,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -356,7 +467,9 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
                 assertThat(e)
                     .isInstanceOf(ClusterNameMismatchException.class)
                     .hasMessageContaining(
-                        "Node embedded reports cluster name 'differentClusterName' that doesn't match our cluster name 'expectedClusterName'."));
+                        String.format(
+                            "Node %s reports cluster name 'differentClusterName' that doesn't match our cluster name 'expectedClusterName'.",
+                            END_POINT)));
   }
 
   @Test
@@ -366,9 +479,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
-                internalDriverContext, CoreProtocolVersion.V4, null, options, heartbeatHandler));
+                internalDriverContext,
+                DefaultProtocolVersion.V4,
+                null,
+                END_POINT,
+                options,
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -386,19 +505,21 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
   @Test
   public void should_initialize_with_events() {
     List<String> eventTypes = ImmutableList.of("foo", "bar");
-    EventCallback eventCallback = Mockito.mock(EventCallback.class);
+    EventCallback eventCallback = mock(EventCallback.class);
     DriverChannelOptions driverChannelOptions =
         DriverChannelOptions.builder().withEvents(eventTypes, eventCallback).build();
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 driverChannelOptions,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -416,7 +537,7 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
   @Test
   public void should_initialize_with_keyspace_and_events() {
     List<String> eventTypes = ImmutableList.of("foo", "bar");
-    EventCallback eventCallback = Mockito.mock(EventCallback.class);
+    EventCallback eventCallback = mock(EventCallback.class);
     DriverChannelOptions driverChannelOptions =
         DriverChannelOptions.builder()
             .withKeyspace(CqlIdentifier.fromCql("ks"))
@@ -425,13 +546,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 driverChannelOptions,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -458,13 +581,15 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
     channel
         .pipeline()
         .addLast(
-            "init",
+            ChannelFactory.INIT_HANDLER_NAME,
             new ProtocolInitHandler(
                 internalDriverContext,
-                CoreProtocolVersion.V4,
+                DefaultProtocolVersion.V4,
                 null,
+                END_POINT,
                 driverChannelOptions,
-                heartbeatHandler));
+                heartbeatHandler,
+                false));
 
     ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
 
@@ -483,5 +608,43 @@ public class ProtocolInitHandlerTest extends ChannelHandlerTestBase {
                 assertThat(error)
                     .isInstanceOf(InvalidKeyspaceException.class)
                     .hasMessage("invalid keyspace"));
+  }
+
+  /**
+   * This covers a corner case where {@code abortAllInFlight} was recursing into itself, causing a
+   * {@link ConcurrentModificationException}. This was recoverable but caused Netty to generate a
+   * warning log.
+   *
+   * @see <a href="https://datastax-oss.atlassian.net/browse/JAVA-2838">JAVA-2838</a>
+   */
+  @Test
+  public void should_fail_pending_requests_only_once_if_init_fails() {
+    Logger logger =
+        (Logger) LoggerFactory.getLogger("io.netty.channel.AbstractChannelHandlerContext");
+    Level levelBefore = logger.getLevel();
+    logger.setLevel(Level.WARN);
+    logger.addAppender(appender);
+
+    channel
+        .pipeline()
+        .addLast(
+            "init",
+            new ProtocolInitHandler(
+                internalDriverContext,
+                DefaultProtocolVersion.V4,
+                null,
+                END_POINT,
+                DriverChannelOptions.DEFAULT,
+                heartbeatHandler,
+                false));
+
+    ChannelFuture connectFuture = channel.connect(new InetSocketAddress("localhost", 9042));
+    channel.pipeline().fireExceptionCaught(new IOException("Mock I/O exception"));
+    assertThat(connectFuture).isFailed();
+
+    verify(appender, never()).doAppend(any(ILoggingEvent.class));
+
+    logger.detachAppender(appender);
+    logger.setLevel(levelBefore);
   }
 }

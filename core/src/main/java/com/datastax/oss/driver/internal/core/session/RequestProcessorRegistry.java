@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,16 @@
 package com.datastax.oss.driver.internal.core.session;
 
 import com.datastax.oss.driver.api.core.session.Request;
-import com.datastax.oss.driver.internal.core.cql.CqlPrepareProcessor;
-import com.datastax.oss.driver.internal.core.cql.CqlRequestProcessor;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@ThreadSafe
 public class RequestProcessorRegistry {
 
   private static final Logger LOG = LoggerFactory.getLogger(RequestProcessorRegistry.class);
-
-  public static RequestProcessorRegistry defaultCqlProcessors(String logPrefix) {
-    return new RequestProcessorRegistry(
-        logPrefix, new CqlRequestProcessor(), new CqlPrepareProcessor());
-  }
 
   private final String logPrefix;
   // Effectively immutable: the contents are never modified after construction
@@ -39,21 +36,26 @@ public class RequestProcessorRegistry {
     this.processors = processors;
   }
 
-  public <SyncResultT, AsyncResultT> RequestProcessor<SyncResultT, AsyncResultT> processorFor(
-      Request<SyncResultT, AsyncResultT> request) {
+  public <RequestT extends Request, ResultT> RequestProcessor<RequestT, ResultT> processorFor(
+      RequestT request, GenericType<ResultT> resultType) {
 
     for (RequestProcessor<?, ?> processor : processors) {
-      if (processor.canProcess(request)) {
+      if (processor.canProcess(request, resultType)) {
         LOG.trace("[{}] Using {} to process {}", logPrefix, processor, request);
         // The cast is safe provided that the processor implements canProcess correctly
         @SuppressWarnings("unchecked")
-        RequestProcessor<SyncResultT, AsyncResultT> result =
-            (RequestProcessor<SyncResultT, AsyncResultT>) processor;
+        RequestProcessor<RequestT, ResultT> result =
+            (RequestProcessor<RequestT, ResultT>) processor;
         return result;
       } else {
         LOG.trace("[{}] {} cannot process {}, trying next", logPrefix, processor, request);
       }
     }
     throw new IllegalArgumentException("No request processor found for " + request);
+  }
+
+  /** This creates a defensive copy on every call, do not overuse. */
+  public Iterable<RequestProcessor<?, ?>> getProcessors() {
+    return ImmutableList.copyOf(processors);
   }
 }

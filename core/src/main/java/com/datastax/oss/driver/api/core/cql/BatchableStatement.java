@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package com.datastax.oss.driver.api.core.cql;
 /**
  * A statement that can be added to a CQL batch.
  *
- * @param <T> the "self type" used for covariant returns in subtypes.
+ * @param <SelfT> the "self type" used for covariant returns in subtypes.
  */
-public interface BatchableStatement<T extends BatchableStatement<T>> extends Statement<T> {}
+public interface BatchableStatement<SelfT extends BatchableStatement<SelfT>>
+    extends Statement<SelfT> {}

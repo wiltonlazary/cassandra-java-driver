@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,13 @@ package com.datastax.oss.driver.internal.core.type;
 import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import java.io.Serializable;
+import java.util.Locale;
+import net.jcip.annotations.Immutable;
 
-public class PrimitiveType implements DataType {
+@Immutable
+public class PrimitiveType implements DataType, Serializable {
 
   /** @serial */
   private final int protocolCode;
@@ -39,7 +44,7 @@ public class PrimitiveType implements DataType {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     // nothing to do
   }
 
@@ -58,6 +63,12 @@ public class PrimitiveType implements DataType {
   @Override
   public int hashCode() {
     return protocolCode;
+  }
+
+  @NonNull
+  @Override
+  public String asCql(boolean includeFrozen, boolean pretty) {
+    return codeName(protocolCode).toLowerCase(Locale.ROOT);
   }
 
   @Override

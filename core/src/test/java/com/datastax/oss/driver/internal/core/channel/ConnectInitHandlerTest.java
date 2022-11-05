@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,13 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import java.net.InetSocketAddress;
 import org.junit.Before;
 import org.junit.Test;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class ConnectInitHandlerTest extends ChannelHandlerTestBase {
 

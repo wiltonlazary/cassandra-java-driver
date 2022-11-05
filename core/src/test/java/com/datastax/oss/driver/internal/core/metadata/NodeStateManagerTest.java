@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,18 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
-import com.datastax.oss.driver.api.core.config.DriverConfigProfile;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.metadata.Metadata;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.metadata.NodeState;
@@ -25,14 +34,17 @@ import com.datastax.oss.driver.internal.core.channel.ChannelEvent;
 import com.datastax.oss.driver.internal.core.context.EventBus;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.context.NettyOptions;
+import com.datastax.oss.driver.internal.core.metrics.MetricsFactory;
 import com.datastax.oss.driver.internal.core.util.concurrent.BlockingOperation;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.util.concurrent.Uninterruptibles;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
+import com.datastax.oss.driver.shaded.guava.common.util.concurrent.Uninterruptibles;
 import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.util.concurrent.Future;
 import java.net.InetSocketAddress;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -41,24 +53,17 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 
 public class NodeStateManagerTest {
   private static final InetSocketAddress NEW_ADDRESS = new InetSocketAddress("127.0.0.3", 9042);
 
   @Mock private InternalDriverContext context;
   @Mock private DriverConfig config;
-  @Mock private DriverConfigProfile defaultConfigProfile;
+  @Mock private DriverExecutionProfile defaultProfile;
   @Mock private NettyOptions nettyOptions;
   @Mock private MetadataManager metadataManager;
-  @Mock private Metadata metadata;
+  @Mock protected MetricsFactory metricsFactory;
   private DefaultNode node1, node2;
   private EventBus eventBus;
   private DefaultEventLoopGroup adminEventLoopGroup;
@@ -68,32 +73,32 @@ public class NodeStateManagerTest {
     MockitoAnnotations.initMocks(this);
 
     // Disable debouncing by default, tests that need it will override
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.METADATA_TOPOLOGY_WINDOW))
+    when(defaultProfile.getDuration(DefaultDriverOption.METADATA_TOPOLOGY_WINDOW))
         .thenReturn(Duration.ofSeconds(0));
-    Mockito.when(defaultConfigProfile.getInt(CoreDriverOption.METADATA_TOPOLOGY_MAX_EVENTS))
-        .thenReturn(1);
-    Mockito.when(config.getDefaultProfile()).thenReturn(defaultConfigProfile);
-    Mockito.when(context.config()).thenReturn(config);
+    when(defaultProfile.getInt(DefaultDriverOption.METADATA_TOPOLOGY_MAX_EVENTS)).thenReturn(1);
+    when(config.getDefaultProfile()).thenReturn(defaultProfile);
+    when(context.getConfig()).thenReturn(config);
 
-    this.eventBus = Mockito.spy(new EventBus("test"));
-    Mockito.when(context.eventBus()).thenReturn(eventBus);
+    this.eventBus = spy(new EventBus("test"));
+    when(context.getEventBus()).thenReturn(eventBus);
 
     adminEventLoopGroup = new DefaultEventLoopGroup(1, new BlockingOperation.SafeThreadFactory());
-    Mockito.when(nettyOptions.adminEventExecutorGroup()).thenReturn(adminEventLoopGroup);
-    Mockito.when(context.nettyOptions()).thenReturn(nettyOptions);
+    when(nettyOptions.adminEventExecutorGroup()).thenReturn(adminEventLoopGroup);
+    when(context.getNettyOptions()).thenReturn(nettyOptions);
 
-    node1 = new DefaultNode(new InetSocketAddress("127.0.0.1", 9042));
-    node2 = new DefaultNode(new InetSocketAddress("127.0.0.2", 9042));
-    ImmutableMap<InetSocketAddress, Node> nodes =
-        ImmutableMap.<InetSocketAddress, Node>builder()
-            .put(node1.getConnectAddress(), node1)
-            .put(node2.getConnectAddress(), node2)
+    when(context.getMetricsFactory()).thenReturn(metricsFactory);
+    node1 = TestNodeFactory.newNode(1, context);
+    node2 = TestNodeFactory.newNode(2, context);
+    ImmutableMap<UUID, Node> nodes =
+        ImmutableMap.<UUID, Node>builder()
+            .put(node1.getHostId(), node1)
+            .put(node2.getHostId(), node2)
             .build();
-    Mockito.when(metadata.getNodes()).thenReturn(nodes);
-    Mockito.when(metadataManager.getMetadata()).thenReturn(metadata);
-    Mockito.when(metadataManager.refreshNode(any(Node.class)))
+    Metadata metadata = new DefaultMetadata(nodes, Collections.emptyMap(), null, null);
+    when(metadataManager.getMetadata()).thenReturn(metadata);
+    when(metadataManager.refreshNode(any(Node.class)))
         .thenReturn(CompletableFuture.completedFuture(null));
-    Mockito.when(context.metadataManager()).thenReturn(metadataManager);
+    when(context.getMetadataManager()).thenReturn(metadataManager);
   }
 
   @After
@@ -110,13 +115,13 @@ public class NodeStateManagerTest {
       node1.state = oldState;
 
       // When
-      eventBus.fire(TopologyEvent.suggestUp(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.suggestUp(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(oldState);
     }
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -129,20 +134,20 @@ public class NodeStateManagerTest {
       node1.state = oldState;
 
       // When
-      eventBus.fire(TopologyEvent.suggestUp(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.suggestUp(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(NodeState.UP);
       if (oldState != NodeState.UNKNOWN) {
-        Mockito.verify(metadataManager, times(++i)).refreshNode(node1);
+        verify(metadataManager, times(++i)).refreshNode(node1);
       }
-      Mockito.verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
+      verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
     }
   }
 
   @Test
-  public void should_add_node_if_up_event_and_not_in_metadata() {
+  public void should_refresh_node_list_if_up_event_and_not_in_metadata() {
     // Given
     new NodeStateManager(context);
 
@@ -151,8 +156,8 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
-    Mockito.verify(metadataManager).addNode(NEW_ADDRESS);
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(metadataManager).refreshNodes();
   }
 
   @Test
@@ -164,13 +169,13 @@ public class NodeStateManagerTest {
       node1.state = oldState;
 
       // When
-      eventBus.fire(TopologyEvent.suggestDown(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.suggestDown(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(oldState);
     }
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -182,12 +187,12 @@ public class NodeStateManagerTest {
     assertThat(node1.openConnections).isEqualTo(1);
 
     // When
-    eventBus.fire(TopologyEvent.suggestDown(node1.getConnectAddress()));
+    eventBus.fire(TopologyEvent.suggestDown(node1.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
     assertThat(node1.state).isEqualTo(NodeState.UP);
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -200,12 +205,12 @@ public class NodeStateManagerTest {
       assertThat(node1.openConnections).isEqualTo(0);
 
       // When
-      eventBus.fire(TopologyEvent.suggestDown(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.suggestDown(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(NodeState.DOWN);
-      Mockito.verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.DOWN, node1));
+      verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.DOWN, node1));
     }
   }
 
@@ -219,8 +224,8 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
-    Mockito.verify(metadataManager, never()).addNode(NEW_ADDRESS);
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(metadataManager, never()).addNode(NEW_ADDRESS);
   }
 
   @Test
@@ -230,12 +235,12 @@ public class NodeStateManagerTest {
     node1.state = NodeState.FORCED_DOWN;
 
     // When
-    eventBus.fire(TopologyEvent.forceDown(node1.getConnectAddress()));
+    eventBus.fire(TopologyEvent.forceDown(node1.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
     assertThat(node1.state).isEqualTo(NodeState.FORCED_DOWN);
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -247,12 +252,12 @@ public class NodeStateManagerTest {
       node1.state = oldState;
 
       // When
-      eventBus.fire(TopologyEvent.forceDown(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.forceDown(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(NodeState.FORCED_DOWN);
-      Mockito.verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.FORCED_DOWN, node1));
+      verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.FORCED_DOWN, node1));
     }
   }
 
@@ -266,8 +271,8 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
-    Mockito.verify(metadataManager, never()).addNode(NEW_ADDRESS);
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(metadataManager, never()).addNode(NEW_ADDRESS);
   }
 
   @Test
@@ -277,12 +282,12 @@ public class NodeStateManagerTest {
     node1.state = NodeState.UP;
 
     // When
-    eventBus.fire(TopologyEvent.forceUp(node1.getConnectAddress()));
+    eventBus.fire(TopologyEvent.forceUp(node1.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
     assertThat(node1.state).isEqualTo(NodeState.UP);
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -296,14 +301,14 @@ public class NodeStateManagerTest {
       node1.state = oldState;
 
       // When
-      eventBus.fire(TopologyEvent.forceUp(node1.getConnectAddress()));
+      eventBus.fire(TopologyEvent.forceUp(node1.getBroadcastRpcAddress().get()));
       waitForPendingAdminTasks();
 
       // Then
       assertThat(node1.state).isEqualTo(NodeState.UP);
-      Mockito.verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
+      verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
       if (oldState != NodeState.UNKNOWN) {
-        Mockito.verify(metadataManager, times(++i)).refreshNode(node1);
+        verify(metadataManager, times(++i)).refreshNode(node1);
       }
     }
   }
@@ -318,8 +323,8 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
-    Mockito.verify(metadataManager).addNode(NEW_ADDRESS);
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(metadataManager).addNode(NEW_ADDRESS);
   }
 
   @Test
@@ -333,7 +338,7 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(metadataManager).addNode(newAddress);
+    verify(metadataManager).addNode(newAddress);
   }
 
   @Test
@@ -342,11 +347,11 @@ public class NodeStateManagerTest {
     new NodeStateManager(context);
 
     // When
-    eventBus.fire(TopologyEvent.suggestAdded(node1.getConnectAddress()));
+    eventBus.fire(TopologyEvent.suggestAdded(node1.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(metadataManager, never()).addNode(any(InetSocketAddress.class));
+    verify(metadataManager, never()).addNode(any(InetSocketAddress.class));
   }
 
   @Test
@@ -355,11 +360,11 @@ public class NodeStateManagerTest {
     new NodeStateManager(context);
 
     // When
-    eventBus.fire(TopologyEvent.suggestRemoved(node1.getConnectAddress()));
+    eventBus.fire(TopologyEvent.suggestRemoved(node1.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(metadataManager).removeNode(node1.getConnectAddress());
+    verify(metadataManager).removeNode(node1.getBroadcastRpcAddress().get());
   }
 
   @Test
@@ -373,26 +378,25 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(metadataManager, never()).removeNode(any(InetSocketAddress.class));
+    verify(metadataManager, never()).removeNode(any(InetSocketAddress.class));
   }
 
   @Test
   public void should_coalesce_topology_events() {
     // Given
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.METADATA_TOPOLOGY_WINDOW))
+    when(defaultProfile.getDuration(DefaultDriverOption.METADATA_TOPOLOGY_WINDOW))
         .thenReturn(Duration.ofDays(1));
-    Mockito.when(defaultConfigProfile.getInt(CoreDriverOption.METADATA_TOPOLOGY_MAX_EVENTS))
-        .thenReturn(5);
+    when(defaultProfile.getInt(DefaultDriverOption.METADATA_TOPOLOGY_MAX_EVENTS)).thenReturn(5);
     new NodeStateManager(context);
     node1.state = NodeState.FORCED_DOWN;
     node2.state = NodeState.DOWN;
 
     // When
-    eventBus.fire(TopologyEvent.suggestDown(node1.getConnectAddress()));
-    eventBus.fire(TopologyEvent.forceUp(node1.getConnectAddress()));
-    eventBus.fire(TopologyEvent.suggestDown(node2.getConnectAddress()));
-    eventBus.fire(TopologyEvent.suggestDown(node1.getConnectAddress()));
-    eventBus.fire(TopologyEvent.suggestUp(node2.getConnectAddress()));
+    eventBus.fire(TopologyEvent.suggestDown(node1.getBroadcastRpcAddress().get()));
+    eventBus.fire(TopologyEvent.forceUp(node1.getBroadcastRpcAddress().get()));
+    eventBus.fire(TopologyEvent.suggestDown(node2.getBroadcastRpcAddress().get()));
+    eventBus.fire(TopologyEvent.suggestDown(node1.getBroadcastRpcAddress().get()));
+    eventBus.fire(TopologyEvent.suggestUp(node2.getBroadcastRpcAddress().get()));
     waitForPendingAdminTasks();
 
     // Then
@@ -432,7 +436,7 @@ public class NodeStateManagerTest {
 
       // Then
       assertThat(node1.state).isEqualTo(NodeState.UP);
-      Mockito.verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
+      verify(eventBus).fire(NodeStateEvent.changed(oldState, NodeState.UP, node1));
     }
   }
 
@@ -448,7 +452,7 @@ public class NodeStateManagerTest {
 
     // Then
     assertThat(node1.state).isEqualTo(NodeState.FORCED_DOWN);
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test
@@ -479,7 +483,7 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     assertThat(node1.state).isEqualTo(NodeState.DOWN);
-    Mockito.verify(eventBus).fire(NodeStateEvent.changed(NodeState.UP, NodeState.DOWN, node1));
+    verify(eventBus).fire(NodeStateEvent.changed(NodeState.UP, NodeState.DOWN, node1));
   }
 
   @Test
@@ -494,7 +498,7 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     assertThat(node1.state).isEqualTo(NodeState.DOWN);
-    Mockito.verify(eventBus).fire(NodeStateEvent.changed(NodeState.UP, NodeState.DOWN, node1));
+    verify(eventBus).fire(NodeStateEvent.changed(NodeState.UP, NodeState.DOWN, node1));
   }
 
   @Test
@@ -509,7 +513,7 @@ public class NodeStateManagerTest {
     waitForPendingAdminTasks();
 
     assertThat(node1.state).isEqualTo(NodeState.UP);
-    Mockito.verify(eventBus, never()).fire(any(NodeStateEvent.class));
+    verify(eventBus, never()).fire(any(NodeStateEvent.class));
   }
 
   @Test

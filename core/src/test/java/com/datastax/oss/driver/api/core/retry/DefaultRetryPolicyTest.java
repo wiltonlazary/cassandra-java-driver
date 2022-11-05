@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,13 @@
  */
 package com.datastax.oss.driver.api.core.retry;
 
+import static com.datastax.oss.driver.api.core.DefaultConsistencyLevel.QUORUM;
+import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETHROW;
+import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETRY_NEXT;
+import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETRY_SAME;
+import static com.datastax.oss.driver.api.core.servererrors.DefaultWriteType.BATCH_LOG;
+import static com.datastax.oss.driver.api.core.servererrors.DefaultWriteType.SIMPLE;
+
 import com.datastax.oss.driver.api.core.connection.ClosedConnectionException;
 import com.datastax.oss.driver.api.core.connection.HeartbeatException;
 import com.datastax.oss.driver.api.core.servererrors.OverloadedException;
@@ -22,14 +29,8 @@ import com.datastax.oss.driver.api.core.servererrors.ReadFailureException;
 import com.datastax.oss.driver.api.core.servererrors.ServerError;
 import com.datastax.oss.driver.api.core.servererrors.TruncateException;
 import com.datastax.oss.driver.api.core.servererrors.WriteFailureException;
+import com.datastax.oss.driver.internal.core.retry.DefaultRetryPolicy;
 import org.junit.Test;
-
-import static com.datastax.oss.driver.api.core.ConsistencyLevel.QUORUM;
-import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETHROW;
-import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETRY_NEXT;
-import static com.datastax.oss.driver.api.core.retry.RetryDecision.RETRY_SAME;
-import static com.datastax.oss.driver.api.core.retry.WriteType.BATCH_LOG;
-import static com.datastax.oss.driver.api.core.retry.WriteType.SIMPLE;
 
 public class DefaultRetryPolicyTest extends RetryPolicyTestBase {
 
@@ -39,48 +40,48 @@ public class DefaultRetryPolicyTest extends RetryPolicyTestBase {
 
   @Test
   public void should_process_read_timeouts() {
-    assertOnReadTimeout(QUORUM, 2, 2, false, 0).isEqualTo(RETRY_SAME);
-    assertOnReadTimeout(QUORUM, 2, 2, false, 1).isEqualTo(RETHROW);
-    assertOnReadTimeout(QUORUM, 2, 2, true, 0).isEqualTo(RETHROW);
-    assertOnReadTimeout(QUORUM, 2, 1, true, 0).isEqualTo(RETHROW);
-    assertOnReadTimeout(QUORUM, 2, 1, false, 0).isEqualTo(RETHROW);
+    assertOnReadTimeout(QUORUM, 2, 2, false, 0).hasDecision(RETRY_SAME);
+    assertOnReadTimeout(QUORUM, 2, 2, false, 1).hasDecision(RETHROW);
+    assertOnReadTimeout(QUORUM, 2, 2, true, 0).hasDecision(RETHROW);
+    assertOnReadTimeout(QUORUM, 2, 1, true, 0).hasDecision(RETHROW);
+    assertOnReadTimeout(QUORUM, 2, 1, false, 0).hasDecision(RETHROW);
   }
 
   @Test
   public void should_process_write_timeouts() {
-    assertOnWriteTimeout(QUORUM, BATCH_LOG, 2, 0, 0).isEqualTo(RETRY_SAME);
-    assertOnWriteTimeout(QUORUM, BATCH_LOG, 2, 0, 1).isEqualTo(RETHROW);
-    assertOnWriteTimeout(QUORUM, SIMPLE, 2, 0, 0).isEqualTo(RETHROW);
+    assertOnWriteTimeout(QUORUM, BATCH_LOG, 2, 0, 0).hasDecision(RETRY_SAME);
+    assertOnWriteTimeout(QUORUM, BATCH_LOG, 2, 0, 1).hasDecision(RETHROW);
+    assertOnWriteTimeout(QUORUM, SIMPLE, 2, 0, 0).hasDecision(RETHROW);
   }
 
   @Test
   public void should_process_unavailable() {
-    assertOnUnavailable(QUORUM, 2, 1, 0).isEqualTo(RETRY_NEXT);
-    assertOnUnavailable(QUORUM, 2, 1, 1).isEqualTo(RETHROW);
+    assertOnUnavailable(QUORUM, 2, 1, 0).hasDecision(RETRY_NEXT);
+    assertOnUnavailable(QUORUM, 2, 1, 1).hasDecision(RETHROW);
   }
 
   @Test
   public void should_process_aborted_request() {
-    assertOnRequestAborted(ClosedConnectionException.class, 0).isEqualTo(RETRY_NEXT);
-    assertOnRequestAborted(ClosedConnectionException.class, 1).isEqualTo(RETRY_NEXT);
-    assertOnRequestAborted(HeartbeatException.class, 0).isEqualTo(RETRY_NEXT);
-    assertOnRequestAborted(HeartbeatException.class, 1).isEqualTo(RETRY_NEXT);
-    assertOnRequestAborted(Throwable.class, 0).isEqualTo(RETHROW);
+    assertOnRequestAborted(ClosedConnectionException.class, 0).hasDecision(RETRY_NEXT);
+    assertOnRequestAborted(ClosedConnectionException.class, 1).hasDecision(RETRY_NEXT);
+    assertOnRequestAborted(HeartbeatException.class, 0).hasDecision(RETRY_NEXT);
+    assertOnRequestAborted(HeartbeatException.class, 1).hasDecision(RETRY_NEXT);
+    assertOnRequestAborted(Throwable.class, 0).hasDecision(RETHROW);
   }
 
   @Test
   public void should_process_error_response() {
-    assertOnErrorResponse(ReadFailureException.class, 0).isEqualTo(RETHROW);
-    assertOnErrorResponse(ReadFailureException.class, 1).isEqualTo(RETHROW);
-    assertOnErrorResponse(WriteFailureException.class, 0).isEqualTo(RETHROW);
-    assertOnErrorResponse(WriteFailureException.class, 1).isEqualTo(RETHROW);
-    assertOnErrorResponse(WriteFailureException.class, 1).isEqualTo(RETHROW);
+    assertOnErrorResponse(ReadFailureException.class, 0).hasDecision(RETHROW);
+    assertOnErrorResponse(ReadFailureException.class, 1).hasDecision(RETHROW);
+    assertOnErrorResponse(WriteFailureException.class, 0).hasDecision(RETHROW);
+    assertOnErrorResponse(WriteFailureException.class, 1).hasDecision(RETHROW);
+    assertOnErrorResponse(WriteFailureException.class, 1).hasDecision(RETHROW);
 
-    assertOnErrorResponse(OverloadedException.class, 0).isEqualTo(RETRY_NEXT);
-    assertOnErrorResponse(OverloadedException.class, 1).isEqualTo(RETRY_NEXT);
-    assertOnErrorResponse(ServerError.class, 0).isEqualTo(RETRY_NEXT);
-    assertOnErrorResponse(ServerError.class, 1).isEqualTo(RETRY_NEXT);
-    assertOnErrorResponse(TruncateException.class, 0).isEqualTo(RETRY_NEXT);
-    assertOnErrorResponse(TruncateException.class, 1).isEqualTo(RETRY_NEXT);
+    assertOnErrorResponse(OverloadedException.class, 0).hasDecision(RETRY_NEXT);
+    assertOnErrorResponse(OverloadedException.class, 1).hasDecision(RETRY_NEXT);
+    assertOnErrorResponse(ServerError.class, 0).hasDecision(RETRY_NEXT);
+    assertOnErrorResponse(ServerError.class, 1).hasDecision(RETRY_NEXT);
+    assertOnErrorResponse(TruncateException.class, 0).hasDecision(RETRY_NEXT);
+    assertOnErrorResponse(TruncateException.class, 1).hasDecision(RETRY_NEXT);
   }
 }

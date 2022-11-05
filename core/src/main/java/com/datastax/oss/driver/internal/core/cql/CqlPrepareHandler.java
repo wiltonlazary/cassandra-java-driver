@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,25 +16,35 @@
 package com.datastax.oss.driver.internal.core.cql;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
+import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.DriverTimeoutException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.NodeUnavailableException;
+import com.datastax.oss.driver.api.core.ProtocolVersion;
+import com.datastax.oss.driver.api.core.RequestThrottlingException;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.cql.PrepareRequest;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.api.core.metrics.DefaultSessionMetric;
 import com.datastax.oss.driver.api.core.retry.RetryDecision;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import com.datastax.oss.driver.api.core.retry.RetryVerdict;
 import com.datastax.oss.driver.api.core.servererrors.BootstrappingException;
 import com.datastax.oss.driver.api.core.servererrors.CoordinatorException;
 import com.datastax.oss.driver.api.core.servererrors.FunctionFailureException;
 import com.datastax.oss.driver.api.core.servererrors.ProtocolError;
 import com.datastax.oss.driver.api.core.servererrors.QueryValidationException;
-import com.datastax.oss.driver.internal.core.adminrequest.AdminRequestHandler;
+import com.datastax.oss.driver.api.core.session.throttling.RequestThrottler;
+import com.datastax.oss.driver.api.core.session.throttling.Throttled;
+import com.datastax.oss.driver.internal.core.DefaultProtocolFeature;
+import com.datastax.oss.driver.internal.core.ProtocolVersionRegistry;
+import com.datastax.oss.driver.internal.core.adminrequest.ThrottledAdminRequestHandler;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import com.datastax.oss.driver.internal.core.channel.ResponseCallback;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.session.DefaultSession;
-import com.datastax.oss.driver.internal.core.session.RequestHandlerBase;
-import com.datastax.oss.driver.internal.core.util.concurrent.BlockingOperation;
+import com.datastax.oss.driver.internal.core.util.Loggers;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.Message;
@@ -42,54 +52,69 @@ import com.datastax.oss.protocol.internal.ProtocolConstants;
 import com.datastax.oss.protocol.internal.request.Prepare;
 import com.datastax.oss.protocol.internal.response.Error;
 import com.datastax.oss.protocol.internal.response.result.Prepared;
-import io.netty.util.concurrent.EventExecutor;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import io.netty.util.Timeout;
+import io.netty.util.Timer;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
-import io.netty.util.concurrent.ScheduledFuture;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Handles the lifecycle of the preparation of a CQL statement. */
-public class CqlPrepareHandler
-    extends RequestHandlerBase<PreparedStatement, CompletionStage<PreparedStatement>> {
+@ThreadSafe
+public class CqlPrepareHandler implements Throttled {
 
   private static final Logger LOG = LoggerFactory.getLogger(CqlPrepareHandler.class);
 
+  private final long startTimeNanos;
   private final String logPrefix;
-  private final CompletableFuture<PreparedStatement> result;
-  private final Message message;
-  private final EventExecutor scheduler;
-  private final Duration timeout;
-  private final ScheduledFuture<?> timeoutFuture;
-  private final RetryPolicy retryPolicy;
+  private final PrepareRequest initialRequest;
+  private final DefaultSession session;
+  private final InternalDriverContext context;
+  private final Queue<Node> queryPlan;
+  protected final CompletableFuture<PreparedStatement> result;
+  private final Timer timer;
+  private final Timeout scheduledTimeout;
+  private final RequestThrottler throttler;
   private final Boolean prepareOnAllNodes;
-  private final CqlPrepareProcessor processor;
   private volatile InitialPrepareCallback initialCallback;
 
   // The errors on the nodes that were already tried (lazily initialized on the first error).
   // We don't use a map because nodes can appear multiple times.
   private volatile List<Map.Entry<Node, Throwable>> errors;
 
-  CqlPrepareHandler(
+  protected CqlPrepareHandler(
       PrepareRequest request,
-      CqlPrepareProcessor processor,
       DefaultSession session,
       InternalDriverContext context,
       String sessionLogPrefix) {
-    super(request, session, context);
+
+    this.startTimeNanos = System.nanoTime();
     this.logPrefix = sessionLogPrefix + "|" + this.hashCode();
-    LOG.debug("[{}] Creating new handler for prepare request {}", logPrefix, request);
-    this.processor = processor;
+    LOG.trace("[{}] Creating new handler for prepare request {}", logPrefix, request);
+
+    this.initialRequest = request;
+    this.session = session;
+    this.context = context;
+    DriverExecutionProfile executionProfile = Conversions.resolveExecutionProfile(request, context);
+    this.queryPlan =
+        context
+            .getLoadBalancingPolicyWrapper()
+            .newQueryPlan(request, executionProfile.getName(), session);
+
     this.result = new CompletableFuture<>();
     this.result.exceptionally(
         t -> {
@@ -98,41 +123,50 @@ public class CqlPrepareHandler
               cancelTimeout();
             }
           } catch (Throwable t2) {
-            LOG.warn("[{}] Uncaught exception", logPrefix, t2);
+            Loggers.warnWithException(LOG, "[{}] Uncaught exception", logPrefix, t2);
           }
           return null;
         });
-    this.message = new Prepare(request.getQuery());
-    this.scheduler = context.nettyOptions().ioEventLoopGroup().next();
+    this.timer = context.getNettyOptions().getTimer();
 
-    this.timeout = configProfile.getDuration(CoreDriverOption.REQUEST_TIMEOUT);
-    this.timeoutFuture = scheduleTimeout(timeout);
-    this.retryPolicy = context.retryPolicy();
-    this.prepareOnAllNodes = configProfile.getBoolean(CoreDriverOption.PREPARE_ON_ALL_NODES);
-    sendRequest(null, 0);
+    Duration timeout = Conversions.resolveRequestTimeout(request, context);
+    this.scheduledTimeout = scheduleTimeout(timeout);
+    this.prepareOnAllNodes = executionProfile.getBoolean(DefaultDriverOption.PREPARE_ON_ALL_NODES);
+
+    this.throttler = context.getRequestThrottler();
+    this.throttler.register(this);
   }
 
   @Override
-  public CompletionStage<PreparedStatement> asyncResult() {
+  public void onThrottleReady(boolean wasDelayed) {
+    DriverExecutionProfile executionProfile =
+        Conversions.resolveExecutionProfile(initialRequest, context);
+    if (wasDelayed) {
+      session
+          .getMetricUpdater()
+          .updateTimer(
+              DefaultSessionMetric.THROTTLING_DELAY,
+              executionProfile.getName(),
+              System.nanoTime() - startTimeNanos,
+              TimeUnit.NANOSECONDS);
+    }
+    sendRequest(initialRequest, null, 0);
+  }
+
+  public CompletableFuture<PreparedStatement> handle() {
     return result;
   }
 
-  @Override
-  public PreparedStatement syncResult() {
-    BlockingOperation.checkNotDriverThread();
-    return CompletableFutures.getUninterruptibly(asyncResult());
-  }
-
-  private ScheduledFuture<?> scheduleTimeout(Duration timeout) {
-    if (timeout.toNanos() > 0) {
-      return scheduler.schedule(
-          () -> {
-            setFinalError(new DriverTimeoutException("Query timed out after " + timeout));
+  private Timeout scheduleTimeout(Duration timeoutDuration) {
+    if (timeoutDuration.toNanos() > 0) {
+      return this.timer.newTimeout(
+          (Timeout timeout1) -> {
+            setFinalError(new DriverTimeoutException("Query timed out after " + timeoutDuration));
             if (initialCallback != null) {
               initialCallback.cancel();
             }
           },
-          timeout.toNanos(),
+          timeoutDuration.toNanos(),
           TimeUnit.NANOSECONDS);
     } else {
       return null;
@@ -140,21 +174,23 @@ public class CqlPrepareHandler
   }
 
   private void cancelTimeout() {
-    if (this.timeoutFuture != null) {
-      this.timeoutFuture.cancel(false);
+    if (this.scheduledTimeout != null) {
+      this.scheduledTimeout.cancel();
     }
   }
 
-  private void sendRequest(Node node, int retryCount) {
+  private void sendRequest(PrepareRequest request, Node node, int retryCount) {
     if (result.isDone()) {
       return;
     }
     DriverChannel channel = null;
-    if (node == null || (channel = getChannel(node, logPrefix)) == null) {
+    if (node == null || (channel = session.getChannel(node, logPrefix)) == null) {
       while (!result.isDone() && (node = queryPlan.poll()) != null) {
-        channel = getChannel(node, logPrefix);
+        channel = session.getChannel(node, logPrefix);
         if (channel != null) {
           break;
+        } else {
+          recordError(node, new NodeUnavailableException(node));
         }
       }
     }
@@ -162,11 +198,27 @@ public class CqlPrepareHandler
       setFinalError(AllNodesFailedException.fromErrors(this.errors));
     } else {
       InitialPrepareCallback initialPrepareCallback =
-          new InitialPrepareCallback(node, channel, retryCount);
+          new InitialPrepareCallback(request, node, channel, retryCount);
+
+      Prepare message = toPrepareMessage(request);
+
       channel
-          .write(message, false, Frame.NO_PAYLOAD, initialPrepareCallback)
+          .write(message, false, request.getCustomPayload(), initialPrepareCallback)
           .addListener(initialPrepareCallback);
     }
+  }
+
+  @NonNull
+  private Prepare toPrepareMessage(PrepareRequest request) {
+    ProtocolVersion protocolVersion = context.getProtocolVersion();
+    ProtocolVersionRegistry registry = context.getProtocolVersionRegistry();
+    CqlIdentifier keyspace = request.getKeyspace();
+    if (keyspace != null
+        && !registry.supports(protocolVersion, DefaultProtocolFeature.PER_REQUEST_KEYSPACE)) {
+      throw new IllegalArgumentException(
+          "Can't use per-request keyspace with protocol " + protocolVersion);
+    }
+    return new Prepare(request.getQuery(), (keyspace == null) ? null : keyspace.asInternal());
   }
 
   private void recordError(Node node, Throwable error) {
@@ -183,91 +235,113 @@ public class CqlPrepareHandler
     errorsSnapshot.add(new AbstractMap.SimpleEntry<>(node, error));
   }
 
-  private void setFinalResult(Prepared prepared) {
-    DefaultPreparedStatement newStatement =
-        Conversions.toPreparedStatement(prepared, (PrepareRequest) request, context);
+  private void setFinalResult(PrepareRequest request, Prepared response) {
 
-    DefaultPreparedStatement cachedStatement = processor.cache(newStatement);
+    // Whatever happens below, we're done with this stream id
+    throttler.signalSuccess(this);
 
-    if (cachedStatement != newStatement) {
-      // The statement already existed in the cache, assume it's because the client called
-      // prepare() twice, and therefore it's already been prepared on other nodes.
-      result.complete(cachedStatement);
+    DefaultPreparedStatement preparedStatement =
+        Conversions.toPreparedStatement(response, request, context);
+
+    session
+        .getRepreparePayloads()
+        .put(preparedStatement.getId(), preparedStatement.getRepreparePayload());
+    if (prepareOnAllNodes) {
+      prepareOnOtherNodes(request)
+          .thenRun(
+              () -> {
+                LOG.trace(
+                    "[{}] Done repreparing on other nodes, completing the request", logPrefix);
+                result.complete(preparedStatement);
+              })
+          .exceptionally(
+              error -> {
+                result.completeExceptionally(error);
+                return null;
+              });
     } else {
-      session
-          .getRepreparePayloads()
-          .put(cachedStatement.getId(), cachedStatement.getRepreparePayload());
-      if (prepareOnAllNodes) {
-        prepareOnOtherNodes()
-            .thenRun(
-                () -> {
-                  LOG.debug(
-                      "[{}] Done repreparing on other nodes, completing the request", logPrefix);
-                  result.complete(cachedStatement);
-                })
-            .exceptionally(
-                error -> {
-                  result.completeExceptionally(error);
-                  return null;
-                });
-      } else {
-        LOG.debug("[{}] Prepare on all nodes is disabled, completing the request", logPrefix);
-        result.complete(cachedStatement);
-      }
+      LOG.trace("[{}] Prepare on all nodes is disabled, completing the request", logPrefix);
+      result.complete(preparedStatement);
     }
   }
 
-  private CompletionStage<Void> prepareOnOtherNodes() {
+  private CompletionStage<Void> prepareOnOtherNodes(PrepareRequest request) {
     List<CompletionStage<Void>> otherNodesFutures = new ArrayList<>();
     // Only process the rest of the query plan. Any node before that is either the coordinator, or
     // a node that failed (we assume that retrying right now has little chance of success).
     for (Node node : queryPlan) {
-      otherNodesFutures.add(prepareOnOtherNode(node));
+      otherNodesFutures.add(prepareOnOtherNode(request, node));
     }
     return CompletableFutures.allDone(otherNodesFutures);
   }
 
   // Try to reprepare on another node, after the initial query has succeeded. Errors are not
   // blocking, the preparation will be retried later on that node. Simply warn and move on.
-  private CompletionStage<Void> prepareOnOtherNode(Node node) {
-    LOG.debug("[{}] Repreparing on {}", logPrefix, node);
-    DriverChannel channel = getChannel(node, logPrefix);
+  private CompletionStage<Void> prepareOnOtherNode(PrepareRequest request, Node node) {
+    LOG.trace("[{}] Repreparing on {}", logPrefix, node);
+    DriverChannel channel = session.getChannel(node, logPrefix);
     if (channel == null) {
-      LOG.debug("[{}] Could not get a channel to reprepare on {}, skipping", logPrefix, node);
+      LOG.trace("[{}] Could not get a channel to reprepare on {}, skipping", logPrefix, node);
       return CompletableFuture.completedFuture(null);
     } else {
-      AdminRequestHandler handler =
-          new AdminRequestHandler(channel, message, timeout, logPrefix, message.toString());
+      ThrottledAdminRequestHandler<ByteBuffer> handler =
+          ThrottledAdminRequestHandler.prepare(
+              channel,
+              false,
+              toPrepareMessage(request),
+              request.getCustomPayload(),
+              Conversions.resolveRequestTimeout(request, context),
+              throttler,
+              session.getMetricUpdater(),
+              logPrefix);
       return handler
           .start()
           .handle(
               (result, error) -> {
                 if (error == null) {
-                  LOG.debug("[{}] Successfully reprepared on {}", logPrefix, node);
+                  LOG.trace("[{}] Successfully reprepared on {}", logPrefix, node);
                 } else {
-                  LOG.warn(
-                      "[{}] Error while repreparing on {}: {}", logPrefix, node, error.toString());
+                  Loggers.warnWithException(
+                      LOG, "[{}] Error while repreparing on {}", node, logPrefix, error);
                 }
                 return null;
               });
     }
   }
 
+  @Override
+  public void onThrottleFailure(@NonNull RequestThrottlingException error) {
+    DriverExecutionProfile executionProfile =
+        Conversions.resolveExecutionProfile(initialRequest, context);
+    session
+        .getMetricUpdater()
+        .incrementCounter(DefaultSessionMetric.THROTTLING_ERRORS, executionProfile.getName());
+    setFinalError(error);
+  }
+
   private void setFinalError(Throwable error) {
     if (result.completeExceptionally(error)) {
       cancelTimeout();
+      if (error instanceof DriverTimeoutException) {
+        throttler.signalTimeout(this);
+      } else if (!(error instanceof RequestThrottlingException)) {
+        throttler.signalError(this, error);
+      }
     }
   }
 
   private class InitialPrepareCallback
       implements ResponseCallback, GenericFutureListener<Future<java.lang.Void>> {
+    private final PrepareRequest request;
     private final Node node;
     private final DriverChannel channel;
     // How many times we've invoked the retry policy and it has returned a "retry" decision (0 for
     // the first attempt of each execution).
     private final int retryCount;
 
-    private InitialPrepareCallback(Node node, DriverChannel channel, int retryCount) {
+    private InitialPrepareCallback(
+        PrepareRequest request, Node node, DriverChannel channel, int retryCount) {
+      this.request = request;
       this.node = node;
       this.channel = channel;
       this.retryCount = retryCount;
@@ -275,21 +349,21 @@ public class CqlPrepareHandler
 
     // this gets invoked once the write completes.
     @Override
-    public void operationComplete(Future<java.lang.Void> future) throws Exception {
+    public void operationComplete(Future<java.lang.Void> future) {
       if (!future.isSuccess()) {
-        LOG.debug(
+        LOG.trace(
             "[{}] Failed to send request on {}, trying next node (cause: {})",
             logPrefix,
             node,
             future.cause().toString());
         recordError(node, future.cause());
-        sendRequest(null, retryCount); // try next host
+        sendRequest(request, null, retryCount); // try next host
       } else {
         if (result.isDone()) {
           // Might happen if the timeout just fired
           cancel();
         } else {
-          LOG.debug("[{}] Request sent to {}", logPrefix, node);
+          LOG.trace("[{}] Request sent to {}", logPrefix, node);
           initialCallback = this;
         }
       }
@@ -303,10 +377,10 @@ public class CqlPrepareHandler
       try {
         Message responseMessage = responseFrame.message;
         if (responseMessage instanceof Prepared) {
-          LOG.debug("[{}] Got result, completing", logPrefix);
-          setFinalResult((Prepared) responseMessage);
+          LOG.trace("[{}] Got result, completing", logPrefix);
+          setFinalResult(request, (Prepared) responseMessage);
         } else if (responseMessage instanceof Error) {
-          LOG.debug("[{}] Got error response, processing", logPrefix);
+          LOG.trace("[{}] Got error response, processing", logPrefix);
           processErrorResponse((Error) responseMessage);
         } else {
           setFinalError(new IllegalStateException("Unexpected response " + responseMessage));
@@ -330,34 +404,36 @@ public class CqlPrepareHandler
                 "Unexpected server error for a PREPARE query" + errorMessage));
         return;
       }
-      CoordinatorException error = Conversions.toThrowable(node, errorMessage);
+      CoordinatorException error = Conversions.toThrowable(node, errorMessage, context);
       if (error instanceof BootstrappingException) {
-        LOG.debug("[{}] {} is bootstrapping, trying next node", logPrefix, node);
+        LOG.trace("[{}] {} is bootstrapping, trying next node", logPrefix, node);
         recordError(node, error);
-        sendRequest(null, retryCount);
+        sendRequest(request, null, retryCount);
       } else if (error instanceof QueryValidationException
           || error instanceof FunctionFailureException
           || error instanceof ProtocolError) {
-        LOG.debug("[{}] Unrecoverable error, rethrowing", logPrefix);
+        LOG.trace("[{}] Unrecoverable error, rethrowing", logPrefix);
         setFinalError(error);
       } else {
         // Because prepare requests are known to always be idempotent, we call the retry policy
         // directly, without checking the flag.
-        RetryDecision decision = retryPolicy.onErrorResponse(request, error, retryCount);
-        processRetryDecision(decision, error);
+        RetryPolicy retryPolicy = Conversions.resolveRetryPolicy(request, context);
+        RetryVerdict verdict = retryPolicy.onErrorResponseVerdict(request, error, retryCount);
+        processRetryVerdict(verdict, error);
       }
     }
 
-    private void processRetryDecision(RetryDecision decision, Throwable error) {
-      LOG.debug("[{}] Processing retry decision {}", logPrefix, decision);
+    private void processRetryVerdict(RetryVerdict verdict, Throwable error) {
+      RetryDecision decision = verdict.getRetryDecision();
+      LOG.trace("[{}] Processing retry decision {}", logPrefix, decision);
       switch (decision) {
         case RETRY_SAME:
           recordError(node, error);
-          sendRequest(node, retryCount + 1);
+          sendRequest(verdict.getRetryRequest(request), node, retryCount + 1);
           break;
         case RETRY_NEXT:
           recordError(node, error);
-          sendRequest(null, retryCount + 1);
+          sendRequest(verdict.getRetryRequest(request), null, retryCount + 1);
           break;
         case RETHROW:
           setFinalError(error);
@@ -376,9 +452,17 @@ public class CqlPrepareHandler
       if (result.isDone()) {
         return;
       }
-      LOG.debug("[{}] Request failure, processing: {}", logPrefix, error.toString());
-      RetryDecision decision = retryPolicy.onRequestAborted(request, error, retryCount);
-      processRetryDecision(decision, error);
+      LOG.trace("[{}] Request failure, processing: {}", logPrefix, error.toString());
+      RetryVerdict verdict;
+      try {
+        RetryPolicy retryPolicy = Conversions.resolveRetryPolicy(request, context);
+        verdict = retryPolicy.onRequestAbortedVerdict(request, error, retryCount);
+      } catch (Throwable cause) {
+        setFinalError(
+            new IllegalStateException("Unexpected error while invoking the retry policy", cause));
+        return;
+      }
+      processRetryVerdict(verdict, error);
     }
 
     public void cancel() {
@@ -387,7 +471,7 @@ public class CqlPrepareHandler
           this.channel.cancel(this);
         }
       } catch (Throwable t) {
-        LOG.warn("[{}] Error cancelling", logPrefix, t);
+        Loggers.warnWithException(LOG, "[{}] Error cancelling", logPrefix, t);
       }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,16 +15,17 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import java.util.UUID;
 import org.junit.Test;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 public class TimeUuidCodecTest extends CodecTestBase<UUID> {
 
-  public static final UUID TIME_BASED = new UUID(6342305776366260711L, -5736720392086604862L);
-  public static final UUID NOT_TIME_BASED = new UUID(2, 1);
+  private static final UUID TIME_BASED = new UUID(6342305776366260711L, -5736720392086604862L);
+  private static final UUID NOT_TIME_BASED = new UUID(2, 1);
 
   public TimeUuidCodecTest() {
     this.codec = TypeCodecs.TIMEUUID;
@@ -52,5 +53,23 @@ public class TimeUuidCodecTest extends CodecTestBase<UUID> {
   @Test(expected = IllegalArgumentException.class)
   public void should_not_format_non_time_uuid() {
     format(NOT_TIME_BASED);
+  }
+
+  @Test
+  public void should_accept_generic_type() {
+    assertThat(codec.accepts(GenericType.of(UUID.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(Integer.class))).isFalse();
+  }
+
+  @Test
+  public void should_accept_raw_type() {
+    assertThat(codec.accepts(UUID.class)).isTrue();
+    assertThat(codec.accepts(Integer.class)).isFalse();
+  }
+
+  @Test
+  public void should_accept_object() {
+    assertThat(codec.accepts(TIME_BASED)).isTrue();
+    assertThat(codec.accepts(Integer.MIN_VALUE)).isFalse();
   }
 }

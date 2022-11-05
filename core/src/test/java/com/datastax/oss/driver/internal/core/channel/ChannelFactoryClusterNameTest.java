@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,69 +15,79 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.internal.core.TestResponses;
+import com.datastax.oss.driver.internal.core.metrics.NoopNodeMetricUpdater;
 import com.datastax.oss.protocol.internal.response.Ready;
 import java.util.concurrent.CompletionStage;
 import org.junit.Test;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class ChannelFactoryClusterNameTest extends ChannelFactoryTestBase {
 
   @Test
   public void should_set_cluster_name_from_first_connection() {
     // Given
-    Mockito.when(defaultConfigProfile.isDefined(CoreDriverOption.PROTOCOL_VERSION))
-        .thenReturn(false);
-    Mockito.when(protocolVersionRegistry.highestNonBeta()).thenReturn(CoreProtocolVersion.V4);
+    when(defaultProfile.isDefined(DefaultDriverOption.PROTOCOL_VERSION)).thenReturn(false);
+    when(protocolVersionRegistry.highestNonBeta()).thenReturn(DefaultProtocolVersion.V4);
     ChannelFactory factory = newChannelFactory();
 
     // When
     CompletionStage<DriverChannel> channelFuture =
-        factory.connect(SERVER_ADDRESS, DriverChannelOptions.DEFAULT);
+        factory.connect(
+            SERVER_ADDRESS, DriverChannelOptions.DEFAULT, NoopNodeMetricUpdater.INSTANCE);
 
+    writeInboundFrame(
+        readOutboundFrame(), TestResponses.supportedResponse("mock_key", "mock_value"));
     writeInboundFrame(readOutboundFrame(), new Ready());
     writeInboundFrame(readOutboundFrame(), TestResponses.clusterNameResponse("mockClusterName"));
 
     // Then
-    assertThat(channelFuture).isSuccess();
-    assertThat(factory.clusterName).isEqualTo("mockClusterName");
+    assertThatStage(channelFuture).isSuccess();
+    assertThat(factory.getClusterName()).isEqualTo("mockClusterName");
   }
 
   @Test
   public void should_check_cluster_name_for_next_connections() throws Throwable {
     // Given
-    Mockito.when(defaultConfigProfile.isDefined(CoreDriverOption.PROTOCOL_VERSION))
-        .thenReturn(false);
-    Mockito.when(protocolVersionRegistry.highestNonBeta()).thenReturn(CoreProtocolVersion.V4);
+    when(defaultProfile.isDefined(DefaultDriverOption.PROTOCOL_VERSION)).thenReturn(false);
+    when(protocolVersionRegistry.highestNonBeta()).thenReturn(DefaultProtocolVersion.V4);
     ChannelFactory factory = newChannelFactory();
 
     // When
     CompletionStage<DriverChannel> channelFuture =
-        factory.connect(SERVER_ADDRESS, DriverChannelOptions.DEFAULT);
+        factory.connect(
+            SERVER_ADDRESS, DriverChannelOptions.DEFAULT, NoopNodeMetricUpdater.INSTANCE);
     // open a first connection that will define the cluster name
+    writeInboundFrame(
+        readOutboundFrame(), TestResponses.supportedResponse("mock_key", "mock_value"));
     writeInboundFrame(readOutboundFrame(), new Ready());
     writeInboundFrame(readOutboundFrame(), TestResponses.clusterNameResponse("mockClusterName"));
-    assertThat(channelFuture).isSuccess();
+    assertThatStage(channelFuture).isSuccess();
     // open a second connection that returns the same cluster name
-    channelFuture = factory.connect(SERVER_ADDRESS, DriverChannelOptions.DEFAULT);
+    channelFuture =
+        factory.connect(
+            SERVER_ADDRESS, DriverChannelOptions.DEFAULT, NoopNodeMetricUpdater.INSTANCE);
     writeInboundFrame(readOutboundFrame(), new Ready());
     writeInboundFrame(readOutboundFrame(), TestResponses.clusterNameResponse("mockClusterName"));
 
     // Then
-    assertThat(channelFuture).isSuccess();
+    assertThatStage(channelFuture).isSuccess();
 
     // When
     // open a third connection that returns a different cluster name
-    channelFuture = factory.connect(SERVER_ADDRESS, DriverChannelOptions.DEFAULT);
+    channelFuture =
+        factory.connect(
+            SERVER_ADDRESS, DriverChannelOptions.DEFAULT, NoopNodeMetricUpdater.INSTANCE);
     writeInboundFrame(readOutboundFrame(), new Ready());
     writeInboundFrame(readOutboundFrame(), TestResponses.clusterNameResponse("wrongClusterName"));
 
     // Then
-    assertThat(channelFuture)
+    assertThatStage(channelFuture)
         .isFailed(
             e ->
                 assertThat(e)

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,15 @@
  */
 package com.datastax.oss.driver.internal.core.session;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
 import com.datastax.oss.driver.api.core.metadata.Node;
@@ -22,11 +31,12 @@ import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.pool.ChannelPool;
 import com.datastax.oss.driver.internal.core.pool.ChannelPoolFactory;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
-import com.google.common.collect.ListMultimap;
-import com.google.common.collect.MultimapBuilder;
-import com.google.common.collect.Sets;
+import com.datastax.oss.driver.shaded.guava.common.collect.ListMultimap;
+import com.datastax.oss.driver.shaded.guava.common.collect.MultimapBuilder;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -34,15 +44,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
-import org.mockito.Mockito;
 import org.mockito.internal.util.MockUtil;
 import org.mockito.stubbing.OngoingStubbing;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.timeout;
 
 public class MockChannelPoolFactoryHelper {
 
@@ -58,7 +61,7 @@ public class MockChannelPoolFactoryHelper {
 
   private MockChannelPoolFactoryHelper(ChannelPoolFactory channelPoolFactory) {
     this.channelPoolFactory = channelPoolFactory;
-    this.inOrder = Mockito.inOrder(channelPoolFactory);
+    this.inOrder = inOrder(channelPoolFactory);
   }
 
   public void waitForCall(Node node, CqlIdentifier keyspace, NodeDistance distance) {
@@ -86,7 +89,7 @@ public class MockChannelPoolFactoryHelper {
     ArgumentCaptor<InternalDriverContext> contextCaptor =
         ArgumentCaptor.forClass(InternalDriverContext.class);
     inOrder
-        .verify(channelPoolFactory, timeout(100).atLeast(expected))
+        .verify(channelPoolFactory, timeout(500).atLeast(expected))
         .init(eq(node), eq(keyspace), eq(distance), contextCaptor.capture(), eq("test"));
     int actual = contextCaptor.getAllValues().size();
 
@@ -98,7 +101,7 @@ public class MockChannelPoolFactoryHelper {
 
   public void verifyNoMoreCalls() {
     inOrder
-        .verify(channelPoolFactory, timeout(100).times(0))
+        .verify(channelPoolFactory, timeout(500).times(0))
         .init(
             any(Node.class),
             any(CqlIdentifier.class),
@@ -118,8 +121,8 @@ public class MockChannelPoolFactoryHelper {
         MultimapBuilder.hashKeys().arrayListValues().build();
 
     private Builder(ChannelPoolFactory channelPoolFactory) {
-      assertThat(MockUtil.isMock(channelPoolFactory)).isTrue().as("expected a mock");
-      Mockito.verifyZeroInteractions(channelPoolFactory);
+      assertThat(MockUtil.isMock(channelPoolFactory)).as("expected a mock").isTrue();
+      verifyZeroInteractions(channelPoolFactory);
       this.channelPoolFactory = channelPoolFactory;
     }
 
@@ -157,7 +160,7 @@ public class MockChannelPoolFactoryHelper {
 
     private void stub() {
       for (Params params : invocations.keySet()) {
-        LinkedList<CompletionStage<ChannelPool>> results = new LinkedList<>();
+        Deque<CompletionStage<ChannelPool>> results = new ArrayDeque<>();
         for (Object object : invocations.get(params)) {
           if (object instanceof ChannelPool) {
             results.add(CompletableFuture.completedFuture(((ChannelPool) object)));
@@ -174,13 +177,12 @@ public class MockChannelPoolFactoryHelper {
         if (results.size() > 0) {
           CompletionStage<ChannelPool> first = results.poll();
           OngoingStubbing<CompletionStage<ChannelPool>> ongoingStubbing =
-              Mockito.when(
-                      channelPoolFactory.init(
-                          eq(params.node),
-                          eq(params.keyspace),
-                          eq(params.distance),
-                          any(InternalDriverContext.class),
-                          eq("test")))
+              when(channelPoolFactory.init(
+                      eq(params.node),
+                      eq(params.keyspace),
+                      eq(params.distance),
+                      any(InternalDriverContext.class),
+                      eq("test")))
                   .thenReturn(first);
           for (CompletionStage<ChannelPool> result : results) {
             ongoingStubbing.thenReturn(result);

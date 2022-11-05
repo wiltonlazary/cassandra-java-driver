@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,8 +19,10 @@ import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinition;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * The singleton that represents no column definitions (implemented as an enum which provides the
@@ -34,28 +36,41 @@ public enum EmptyColumnDefinitions implements ColumnDefinitions {
     return 0;
   }
 
+  @NonNull
   @Override
   public ColumnDefinition get(int i) {
     throw new ArrayIndexOutOfBoundsException();
   }
 
   @Override
-  public boolean contains(String name) {
+  public boolean contains(@NonNull String name) {
     return false;
   }
 
   @Override
-  public boolean contains(CqlIdentifier id) {
+  public boolean contains(@NonNull CqlIdentifier id) {
     return false;
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(String name) {
+  public List<Integer> allIndicesOf(@NonNull String name) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull String name) {
     return -1;
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(CqlIdentifier id) {
+  public List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull CqlIdentifier id) {
     return -1;
   }
 
@@ -65,7 +80,7 @@ public enum EmptyColumnDefinitions implements ColumnDefinitions {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {}
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {}
 
   @Override
   public Iterator<ColumnDefinition> iterator() {

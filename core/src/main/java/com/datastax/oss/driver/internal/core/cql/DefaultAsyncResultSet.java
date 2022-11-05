@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,30 +15,33 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
+import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.datastax.oss.driver.api.core.cql.Statement;
-import com.datastax.oss.driver.api.core.session.Session;
 import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.util.CountingIterator;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletionStage;
+import net.jcip.annotations.NotThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@NotThreadSafe // wraps a mutable queue
 public class DefaultAsyncResultSet implements AsyncResultSet {
 
   private static final Logger LOG = LoggerFactory.getLogger(DefaultAsyncResultSet.class);
 
   private final ColumnDefinitions definitions;
   private final ExecutionInfo executionInfo;
-  private final Session session;
+  private final CqlSession session;
   private final CountingIterator<Row> iterator;
   private final Iterable<Row> currentPage;
 
@@ -46,7 +49,7 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
       ColumnDefinitions definitions,
       ExecutionInfo executionInfo,
       Queue<List<ByteBuffer>> data,
-      Session session,
+      CqlSession session,
       InternalDriverContext context) {
     this.definitions = definitions;
     this.executionInfo = executionInfo;
@@ -62,16 +65,19 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
     this.currentPage = () -> iterator;
   }
 
+  @NonNull
   @Override
   public ColumnDefinitions getColumnDefinitions() {
     return definitions;
   }
 
+  @NonNull
   @Override
   public ExecutionInfo getExecutionInfo() {
     return executionInfo;
   }
 
+  @NonNull
   @Override
   public Iterable<Row> currentPage() {
     return currentPage;
@@ -87,6 +93,7 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
     return executionInfo.getPagingState() != null;
   }
 
+  @NonNull
   @Override
   public CompletionStage<AsyncResultSet> fetchNextPage() throws IllegalStateException {
     ByteBuffer nextState = executionInfo.getPagingState();
@@ -94,8 +101,8 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
       throw new IllegalStateException(
           "No next page. Use #hasMorePages before calling this method to avoid this error.");
     }
-    Statement<?> statement = executionInfo.getStatement();
-    LOG.debug("Fetching next page for {}", statement);
+    Statement<?> statement = (Statement<?>) executionInfo.getRequest();
+    LOG.trace("Fetching next page for {}", statement);
     Statement<?> nextStatement = statement.copy(nextState);
     return session.executeAsync(nextStatement);
   }
@@ -119,16 +126,19 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
 
   static AsyncResultSet empty(final ExecutionInfo executionInfo) {
     return new AsyncResultSet() {
+      @NonNull
       @Override
       public ColumnDefinitions getColumnDefinitions() {
         return EmptyColumnDefinitions.INSTANCE;
       }
 
+      @NonNull
       @Override
       public ExecutionInfo getExecutionInfo() {
         return executionInfo;
       }
 
+      @NonNull
       @Override
       public Iterable<Row> currentPage() {
         return Collections.emptyList();
@@ -144,6 +154,7 @@ public class DefaultAsyncResultSet implements AsyncResultSet {
         return false;
       }
 
+      @NonNull
       @Override
       public CompletionStage<AsyncResultSet> fetchNextPage() throws IllegalStateException {
         throw new IllegalStateException(

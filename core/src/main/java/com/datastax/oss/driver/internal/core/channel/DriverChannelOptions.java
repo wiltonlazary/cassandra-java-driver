@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 package com.datastax.oss.driver.internal.core.channel;
 
 import com.datastax.oss.driver.api.core.CqlIdentifier;
-import com.google.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
 import java.util.Collections;
 import java.util.List;
+import net.jcip.annotations.Immutable;
 
 /** Options for the creation of a driver channel. */
+@Immutable
 public class DriverChannelOptions {
 
   /** No keyspace, no events, don't report available stream ids. */
@@ -31,9 +33,6 @@ public class DriverChannelOptions {
   }
 
   public final CqlIdentifier keyspace;
-
-  /** Whether {@link DriverChannel#availableIds()} should be maintained */
-  public final boolean reportAvailableIds;
 
   /**
    * What kind of protocol events to listen for.
@@ -48,12 +47,10 @@ public class DriverChannelOptions {
 
   private DriverChannelOptions(
       CqlIdentifier keyspace,
-      boolean reportAvailableIds,
       List<String> eventTypes,
       EventCallback eventCallback,
       String ownerLogPrefix) {
     this.keyspace = keyspace;
-    this.reportAvailableIds = reportAvailableIds;
     this.eventTypes = eventTypes;
     this.eventCallback = eventCallback;
     this.ownerLogPrefix = ownerLogPrefix;
@@ -61,18 +58,12 @@ public class DriverChannelOptions {
 
   public static class Builder {
     private CqlIdentifier keyspace = null;
-    private boolean reportAvailableIds = false;
     private List<String> eventTypes = Collections.emptyList();
     private EventCallback eventCallback = null;
     private String ownerLogPrefix = null;
 
     public Builder withKeyspace(CqlIdentifier keyspace) {
       this.keyspace = keyspace;
-      return this;
-    }
-
-    public Builder reportAvailableIds(boolean reportAvailableIds) {
-      this.reportAvailableIds = reportAvailableIds;
       return this;
     }
 
@@ -90,8 +81,7 @@ public class DriverChannelOptions {
     }
 
     public DriverChannelOptions build() {
-      return new DriverChannelOptions(
-          keyspace, reportAvailableIds, eventTypes, eventCallback, ownerLogPrefix);
+      return new DriverChannelOptions(keyspace, eventTypes, eventCallback, ownerLogPrefix);
     }
   }
 }

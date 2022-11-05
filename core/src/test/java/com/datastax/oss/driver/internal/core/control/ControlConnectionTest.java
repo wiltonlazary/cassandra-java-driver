@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,28 +15,29 @@
  */
 package com.datastax.oss.driver.internal.core.control;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
+import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.metadata.NodeState;
 import com.datastax.oss.driver.internal.core.channel.ChannelEvent;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import com.datastax.oss.driver.internal.core.channel.MockChannelFactoryHelper;
 import com.datastax.oss.driver.internal.core.metadata.DistanceEvent;
 import com.datastax.oss.driver.internal.core.metadata.NodeStateEvent;
-import com.google.common.collect.ImmutableList;
-import com.tngtech.java.junit.dataprovider.DataProvider;
 import com.tngtech.java.junit.dataprovider.DataProviderRunner;
-import com.tngtech.java.junit.dataprovider.UseDataProvider;
 import java.time.Duration;
-import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
 
 @RunWith(DataProviderRunner.class)
 public class ControlConnectionTest extends ControlConnectionTestBase {
@@ -47,7 +48,7 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     CompletionStage<Void> closeFuture = controlConnection.forceCloseAsync();
 
     // Then
-    assertThat(closeFuture).isSuccess();
+    assertThatStage(closeFuture).isSuccess();
   }
 
   @Test
@@ -55,17 +56,16 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     // Given
     DriverChannel channel1 = newMockDriverChannel(1);
     MockChannelFactoryHelper factoryHelper =
-        MockChannelFactoryHelper.builder(channelFactory).success(ADDRESS1, channel1).build();
+        MockChannelFactoryHelper.builder(channelFactory).success(node1, channel1).build();
 
     // When
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
     // Then
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -75,15 +75,15 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     // Given
     DriverChannel channel1 = newMockDriverChannel(1);
     MockChannelFactoryHelper factoryHelper =
-        MockChannelFactoryHelper.builder(channelFactory).success(ADDRESS1, channel1).build();
+        MockChannelFactoryHelper.builder(channelFactory).success(node1, channel1).build();
 
     // When
-    CompletionStage<Void> initFuture1 = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    CompletionStage<Void> initFuture2 = controlConnection.init(false);
+    CompletionStage<Void> initFuture1 = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    CompletionStage<Void> initFuture2 = controlConnection.init(false, false, false);
 
     // Then
-    assertThat(initFuture1).isEqualTo(initFuture2);
+    assertThatStage(initFuture1).isEqualTo(initFuture2);
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -94,22 +94,22 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .failure(ADDRESS1, "mock failure")
-            .success(ADDRESS2, channel2)
+            .failure(node1, "mock failure")
+            .success(node2, channel2)
             .build();
 
     // When
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    factoryHelper.waitForCall(node2);
 
     // Then
-    assertThat(initFuture)
+    assertThatStage(initFuture)
         .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel2));
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.controlConnectionFailed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
     // each attempt tries all nodes, so there is no reconnection
-    Mockito.verify(reconnectionPolicy, never()).newSchedule();
+    verify(reconnectionPolicy, never()).newNodeSchedule(any(Node.class));
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -119,21 +119,21 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     // Given
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .failure(ADDRESS1, "mock failure")
-            .failure(ADDRESS2, "mock failure")
+            .failure(node1, "mock failure")
+            .failure(node2, "mock failure")
             .build();
 
     // When
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    factoryHelper.waitForCall(node2);
 
     // Then
-    assertThat(initFuture).isFailed();
-    Mockito.verify(eventBus, never()).fire(any(ChannelEvent.class));
+    assertThatStage(initFuture).isFailed();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.controlConnectionFailed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.controlConnectionFailed(node2));
     // no reconnections at init
-    Mockito.verify(reconnectionPolicy, never()).newSchedule();
+    verify(reconnectionPolicy, never()).newNodeSchedule(any(Node.class));
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -141,39 +141,36 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
   @Test
   public void should_reconnect_if_channel_goes_down() throws Exception {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .failure(ADDRESS1, "mock failure")
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .failure(node1, "mock failure")
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // When
     channel1.close();
-    waitForPendingAdminTasks();
 
     // Then
     // a reconnection was started
-    Mockito.verify(reconnectionSchedule).nextDelay();
-    factoryHelper.waitForCall(ADDRESS1);
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
-    assertThat(controlConnection.channel()).isEqualTo(channel2);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
-    Mockito.verify(metadataManager).refreshNodes();
-    Mockito.verify(loadBalancingPolicyWrapper).init();
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
+    factoryHelper.waitForCall(node1);
+    factoryHelper.waitForCall(node2);
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel2));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
+    verify(metadataManager, VERIFY_TIMEOUT).refreshNodes();
+    verify(loadBalancingPolicyWrapper, VERIFY_TIMEOUT).init();
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -181,78 +178,80 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
   @Test
   public void should_reconnect_if_node_becomes_ignored() {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // When
-    mockQueryPlan(NODE2);
-    eventBus.fire(new DistanceEvent(NodeDistance.IGNORED, NODE1));
-    waitForPendingAdminTasks();
+    mockQueryPlan(node2);
+    eventBus.fire(new DistanceEvent(NodeDistance.IGNORED, node1));
 
     // Then
     // an immediate reconnection was started
-    Mockito.verify(reconnectionSchedule, never()).nextDelay();
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
-    assertThat(controlConnection.channel()).isEqualTo(channel2);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
-    Mockito.verify(metadataManager).refreshNodes();
-    Mockito.verify(loadBalancingPolicyWrapper).init();
+    factoryHelper.waitForCall(node2);
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel2));
+    verify(reconnectionSchedule, never()).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
+    verify(metadataManager, VERIFY_TIMEOUT).refreshNodes();
+    verify(loadBalancingPolicyWrapper, VERIFY_TIMEOUT).init();
 
     factoryHelper.verifyNoMoreCalls();
   }
 
   @Test
-  @UseDataProvider("node1RemovedOrForcedDown")
-  public void should_reconnect_if_node_is_removed_or_forced_down(NodeStateEvent event) {
+  public void should_reconnect_if_node_is_removed() {
+    should_reconnect_if_event(NodeStateEvent.removed(node1));
+  }
+
+  @Test
+  public void should_reconnect_if_node_is_forced_down() {
+    should_reconnect_if_event(NodeStateEvent.changed(NodeState.UP, NodeState.FORCED_DOWN, node1));
+  }
+
+  private void should_reconnect_if_event(NodeStateEvent event) {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // When
-    mockQueryPlan(NODE2);
+    mockQueryPlan(node2);
     eventBus.fire(event);
-    waitForPendingAdminTasks();
 
     // Then
     // an immediate reconnection was started
-    Mockito.verify(reconnectionSchedule, never()).nextDelay();
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
-    assertThat(controlConnection.channel()).isEqualTo(channel2);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
-    Mockito.verify(metadataManager).refreshNodes();
-    Mockito.verify(loadBalancingPolicyWrapper).init();
+    factoryHelper.waitForCall(node2);
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel2));
+    verify(reconnectionSchedule, never()).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
+    verify(metadataManager, VERIFY_TIMEOUT).refreshNodes();
+    verify(loadBalancingPolicyWrapper, VERIFY_TIMEOUT).init();
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -260,7 +259,7 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
   @Test
   public void should_reconnect_if_node_became_ignored_during_reconnection_attempt() {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     CompletableFuture<DriverChannel> channel2Future = new CompletableFuture<>();
@@ -268,49 +267,53 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
             // init
-            .success(ADDRESS1, channel1)
+            .success(node1, channel1)
             // reconnection
-            .pending(ADDRESS2, channel2Future)
-            .success(ADDRESS1, channel3)
+            .pending(node2, channel2Future)
+            .success(node1, channel3)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
-    mockQueryPlan(NODE2, NODE1);
+    mockQueryPlan(node2, node1);
     // channel1 goes down, triggering a reconnection
     channel1.close();
-    waitForPendingAdminTasks();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(reconnectionSchedule).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
     // the reconnection to node2 is in progress
-    factoryHelper.waitForCall(ADDRESS2);
+    factoryHelper.waitForCall(node2);
 
     // When
     // node2 becomes ignored
-    eventBus.fire(new DistanceEvent(NodeDistance.IGNORED, NODE2));
+    eventBus.fire(new DistanceEvent(NodeDistance.IGNORED, node2));
     // the reconnection to node2 completes
     channel2Future.complete(channel2);
-    waitForPendingAdminTasks();
 
     // Then
     // The channel should get closed and we should try the next node
-    Mockito.verify(channel2).forceClose();
-    factoryHelper.waitForCall(ADDRESS1);
+    verify(channel2, VERIFY_TIMEOUT).forceClose();
+    factoryHelper.waitForCall(node1);
   }
 
   @Test
-  @UseDataProvider("node2RemovedOrForcedDown")
-  public void
-      should_reconnect_if_node_was_removed_or_forced_down_ignored_during_reconnection_attempt(
-          NodeStateEvent event) {
+  public void should_reconnect_if_node_was_removed_during_reconnection_attempt() {
+    should_reconnect_if_event_during_reconnection_attempt(NodeStateEvent.removed(node2));
+  }
+
+  @Test
+  public void should_reconnect_if_node_was_forced_down_during_reconnection_attempt() {
+    should_reconnect_if_event_during_reconnection_attempt(
+        NodeStateEvent.changed(NodeState.UP, NodeState.FORCED_DOWN, node2));
+  }
+
+  private void should_reconnect_if_event_during_reconnection_attempt(NodeStateEvent event) {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     CompletableFuture<DriverChannel> channel2Future = new CompletableFuture<>();
@@ -318,78 +321,72 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
             // init
-            .success(ADDRESS1, channel1)
+            .success(node1, channel1)
             // reconnection
-            .pending(ADDRESS2, channel2Future)
-            .success(ADDRESS1, channel3)
+            .pending(node2, channel2Future)
+            .success(node1, channel3)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
 
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    assertThatStage(initFuture).isSuccess();
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
-    mockQueryPlan(NODE2, NODE1);
+    mockQueryPlan(node2, node1);
     // channel1 goes down, triggering a reconnection
     channel1.close();
-    waitForPendingAdminTasks();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(reconnectionSchedule).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
     // the reconnection to node2 is in progress
-    factoryHelper.waitForCall(ADDRESS2);
+    factoryHelper.waitForCall(node2);
 
     // When
     // node2 goes into the new state
     eventBus.fire(event);
     // the reconnection to node2 completes
     channel2Future.complete(channel2);
-    waitForPendingAdminTasks();
 
     // Then
     // The channel should get closed and we should try the next node
-    Mockito.verify(channel2).forceClose();
-    factoryHelper.waitForCall(ADDRESS1);
+    verify(channel2, VERIFY_TIMEOUT).forceClose();
+    factoryHelper.waitForCall(node1);
   }
 
   @Test
   public void should_force_reconnection_if_pending() {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofDays(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofDays(1));
 
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .failure(ADDRESS1, "mock failure")
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .failure(node1, "mock failure")
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // the channel fails and a reconnection is scheduled for later
     channel1.close();
-    waitForPendingAdminTasks();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(reconnectionSchedule).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
 
     // When
     controlConnection.reconnectNow();
-    factoryHelper.waitForCall(ADDRESS1);
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
+    factoryHelper.waitForCall(node1);
+    factoryHelper.waitForCall(node2);
 
     // Then
-    assertThat(controlConnection.channel()).isEqualTo(channel2);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel2));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -401,62 +398,59 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     DriverChannel channel2 = newMockDriverChannel(2);
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .failure(ADDRESS1, "mock failure")
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .failure(node1, "mock failure")
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // When
     controlConnection.reconnectNow();
 
     // Then
-    factoryHelper.waitForCall(ADDRESS1);
-    factoryHelper.waitForCall(ADDRESS2);
-    waitForPendingAdminTasks();
-    assertThat(controlConnection.channel()).isEqualTo(channel2);
-    Mockito.verify(channel1).forceClose();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE2));
+    factoryHelper.waitForCall(node1);
+    factoryHelper.waitForCall(node2);
+    await().untilAsserted(() -> assertThat(controlConnection.channel()).isEqualTo(channel2));
+    verify(channel1, VERIFY_TIMEOUT).forceClose();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node2));
 
     factoryHelper.verifyNoMoreCalls();
   }
 
   @Test
-  public void should_not_force_reconnection_if_not_init() {
+  public void should_not_force_reconnection_if_not_init() throws InterruptedException {
     // When
     controlConnection.reconnectNow();
-    waitForPendingAdminTasks();
+    TimeUnit.MILLISECONDS.sleep(500);
 
     // Then
-    Mockito.verify(reconnectionSchedule, never()).nextDelay();
+    verify(reconnectionSchedule, never()).nextDelay();
   }
 
   @Test
-  public void should_not_force_reconnection_if_closed() {
+  public void should_not_force_reconnection_if_closed() throws InterruptedException {
     // Given
     DriverChannel channel1 = newMockDriverChannel(1);
     MockChannelFactoryHelper factoryHelper =
-        MockChannelFactoryHelper.builder(channelFactory).success(ADDRESS1, channel1).build();
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
+        MockChannelFactoryHelper.builder(channelFactory).success(node1, channel1).build();
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture).isSuccess();
     CompletionStage<Void> closeFuture = controlConnection.forceCloseAsync();
-    assertThat(closeFuture).isSuccess();
+    assertThatStage(closeFuture).isSuccess();
 
     // When
     controlConnection.reconnectNow();
-    waitForPendingAdminTasks();
+    TimeUnit.MILLISECONDS.sleep(500);
 
     // Then
-    Mockito.verify(reconnectionSchedule, never()).nextDelay();
+    verify(reconnectionSchedule, never()).nextDelay();
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -466,20 +460,18 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
     // Given
     DriverChannel channel1 = newMockDriverChannel(1);
     MockChannelFactoryHelper factoryHelper =
-        MockChannelFactoryHelper.builder(channelFactory).success(ADDRESS1, channel1).build();
+        MockChannelFactoryHelper.builder(channelFactory).success(node1, channel1).build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture).isSuccess();
 
     // When
     CompletionStage<Void> closeFuture = controlConnection.forceCloseAsync();
-    waitForPendingAdminTasks();
 
     // Then
-    assertThat(closeFuture).isSuccess();
-    Mockito.verify(channel1).forceClose();
+    assertThatStage(closeFuture).isSuccess();
+    verify(channel1, VERIFY_TIMEOUT).forceClose();
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -487,46 +479,43 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
   @Test
   public void should_close_channel_if_closed_during_reconnection() {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
 
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     CompletableFuture<DriverChannel> channel2Future = new CompletableFuture<>();
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .failure(ADDRESS1, "mock failure")
-            .pending(ADDRESS2, channel2Future)
+            .success(node1, channel1)
+            .failure(node1, "mock failure")
+            .pending(node2, channel2Future)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // the channel fails and a reconnection is scheduled
     channel1.close();
-    waitForPendingAdminTasks();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(reconnectionSchedule).nextDelay();
-    factoryHelper.waitForCall(ADDRESS1);
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
+    factoryHelper.waitForCall(node1);
     // channel2 starts initializing (but the future is not completed yet)
-    factoryHelper.waitForCall(ADDRESS2);
+    factoryHelper.waitForCall(node2);
 
     // When
     // the control connection gets closed before channel2 initialization is complete
-    controlConnection.forceCloseAsync();
-    waitForPendingAdminTasks();
+    CompletionStage<Void> closeFuture = controlConnection.forceCloseAsync();
+    assertThatStage(closeFuture).isSuccess();
     channel2Future.complete(channel2);
-    waitForPendingAdminTasks();
 
     // Then
-    Mockito.verify(channel2).forceClose();
+    verify(channel2, VERIFY_TIMEOUT).forceClose();
     // no event because the control connection never "owned" the channel
-    Mockito.verify(eventBus, never()).fire(ChannelEvent.channelOpened(NODE2));
-    Mockito.verify(eventBus, never()).fire(ChannelEvent.channelClosed(NODE2));
+    verify(eventBus, never()).fire(ChannelEvent.channelOpened(node2));
+    verify(eventBus, never()).fire(ChannelEvent.channelClosed(node2));
 
     factoryHelper.verifyNoMoreCalls();
   }
@@ -534,56 +523,40 @@ public class ControlConnectionTest extends ControlConnectionTestBase {
   @Test
   public void should_handle_channel_failure_if_closed_during_reconnection() {
     // Given
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofNanos(1));
 
     DriverChannel channel1 = newMockDriverChannel(1);
     DriverChannel channel2 = newMockDriverChannel(2);
     CompletableFuture<DriverChannel> channel1Future = new CompletableFuture<>();
     MockChannelFactoryHelper factoryHelper =
         MockChannelFactoryHelper.builder(channelFactory)
-            .success(ADDRESS1, channel1)
-            .pending(ADDRESS1, channel1Future)
-            .success(ADDRESS2, channel2)
+            .success(node1, channel1)
+            .pending(node1, channel1Future)
+            .success(node2, channel2)
             .build();
 
-    CompletionStage<Void> initFuture = controlConnection.init(false);
-    factoryHelper.waitForCall(ADDRESS1);
-    waitForPendingAdminTasks();
-    assertThat(initFuture).isSuccess();
-    assertThat(controlConnection.channel()).isEqualTo(channel1);
-    Mockito.verify(eventBus).fire(ChannelEvent.channelOpened(NODE1));
+    CompletionStage<Void> initFuture = controlConnection.init(false, false, false);
+    factoryHelper.waitForCall(node1);
+    assertThatStage(initFuture)
+        .isSuccess(v -> assertThat(controlConnection.channel()).isEqualTo(channel1));
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelOpened(node1));
 
     // the channel fails and a reconnection is scheduled
     channel1.close();
-    waitForPendingAdminTasks();
-    Mockito.verify(eventBus).fire(ChannelEvent.channelClosed(NODE1));
-    Mockito.verify(reconnectionSchedule).nextDelay();
+    verify(eventBus, VERIFY_TIMEOUT).fire(ChannelEvent.channelClosed(node1));
+    verify(reconnectionSchedule, VERIFY_TIMEOUT).nextDelay();
     // channel1 starts initializing (but the future is not completed yet)
-    factoryHelper.waitForCall(ADDRESS1);
+    factoryHelper.waitForCall(node1);
 
     // When
     // the control connection gets closed before channel1 initialization fails
-    controlConnection.forceCloseAsync();
+    CompletionStage<Void> closeFuture = controlConnection.forceCloseAsync();
+    assertThatStage(closeFuture).isSuccess();
     channel1Future.completeExceptionally(new Exception("mock failure"));
-    waitForPendingAdminTasks();
 
     // Then
     // should never try channel2 because the reconnection has detected that it can stop after the
     // first failure
     factoryHelper.verifyNoMoreCalls();
-  }
-
-  @DataProvider
-  public static List<List<Object>> node1RemovedOrForcedDown() {
-    return ImmutableList.of(
-        ImmutableList.of(NodeStateEvent.removed(NODE1)),
-        ImmutableList.of(NodeStateEvent.changed(NodeState.UP, NodeState.FORCED_DOWN, NODE1)));
-  }
-
-  @DataProvider
-  public static List<List<Object>> node2RemovedOrForcedDown() {
-    return ImmutableList.of(
-        ImmutableList.of(NodeStateEvent.removed(NODE2)),
-        ImmutableList.of(NodeStateEvent.changed(NodeState.UP, NodeState.FORCED_DOWN, NODE2)));
   }
 }

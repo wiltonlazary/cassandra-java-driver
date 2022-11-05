@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,23 +15,32 @@
  */
 package com.datastax.oss.driver.api.testinfra.simulacron;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
 import com.datastax.oss.driver.api.core.ProtocolVersion;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
 import com.datastax.oss.driver.api.testinfra.CassandraResourceRule;
+import com.datastax.oss.driver.internal.core.metadata.DefaultEndPoint;
 import com.datastax.oss.simulacron.common.cluster.ClusterSpec;
-import com.datastax.oss.simulacron.server.AddressResolver;
 import com.datastax.oss.simulacron.server.BoundCluster;
-import com.datastax.oss.simulacron.server.BoundNode;
+import com.datastax.oss.simulacron.server.Inet4Resolver;
 import com.datastax.oss.simulacron.server.Server;
-import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 public class SimulacronRule extends CassandraResourceRule {
   // TODO perhaps share server some other way
+  // TODO: Temporarily do not release addresses to ensure IPs are always ordered
+  // TODO: Add a way to configure the server for multiple nodes per ip
   public static final Server server =
-      Server.builder().withAddressResolver(new AddressResolver.Inet4Resolver(9043)).build();
+      Server.builder()
+          .withAddressResolver(
+              new Inet4Resolver(9043) {
+                @Override
+                public void release(SocketAddress address) {}
+              })
+          .build();
 
   private final ClusterSpec clusterSpec;
   private BoundCluster boundCluster;
@@ -74,17 +83,14 @@ public class SimulacronRule extends CassandraResourceRule {
 
   /** @return All nodes in first data center. */
   @Override
-  public Set<InetSocketAddress> getContactPoints() {
-    return boundCluster
-        .dc(0)
-        .getNodes()
-        .stream()
-        .map(BoundNode::inetSocketAddress)
+  public Set<EndPoint> getContactPoints() {
+    return boundCluster.dc(0).getNodes().stream()
+        .map(node -> new DefaultEndPoint(node.inetSocketAddress()))
         .collect(Collectors.toSet());
   }
 
   @Override
   public ProtocolVersion getHighestProtocolVersion() {
-    return CoreProtocolVersion.V4;
+    return DefaultProtocolVersion.V4;
   }
 }

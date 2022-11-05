@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,15 +15,22 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
+import com.datastax.oss.driver.api.core.PagingIterable;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.datastax.oss.driver.api.core.cql.Row;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.internal.core.PagingIterableWrapper;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Spliterator;
+import java.util.function.Function;
+import net.jcip.annotations.NotThreadSafe;
 
+@NotThreadSafe
 public class SinglePageResultSet implements ResultSet {
   private final AsyncResultSet onlyPage;
 
@@ -32,16 +39,19 @@ public class SinglePageResultSet implements ResultSet {
     assert !onlyPage.hasMorePages();
   }
 
+  @NonNull
   @Override
   public ColumnDefinitions getColumnDefinitions() {
     return onlyPage.getColumnDefinitions();
   }
 
+  @NonNull
   @Override
   public ExecutionInfo getExecutionInfo() {
     return onlyPage.getExecutionInfo();
   }
 
+  @NonNull
   @Override
   public List<ExecutionInfo> getExecutionInfos() {
     // Assuming this will be called 0 or 1 time, avoid creating the list if it's 0.
@@ -58,14 +68,25 @@ public class SinglePageResultSet implements ResultSet {
     return onlyPage.remaining();
   }
 
-  @Override
-  public void fetchNextPage() {
-    // nothing to do
-  }
-
+  @NonNull
   @Override
   public Iterator<Row> iterator() {
     return onlyPage.currentPage().iterator();
+  }
+
+  @NonNull
+  @Override
+  public Spliterator<Row> spliterator() {
+    return PagingIterableSpliterator.builder(this)
+        .withEstimatedSize(getAvailableWithoutFetching())
+        .build();
+  }
+
+  @NonNull
+  @Override
+  public <TargetElementT> PagingIterable<TargetElementT> map(
+      Function<? super Row, ? extends TargetElementT> elementMapper) {
+    return new PagingIterableWrapper<>(this, elementMapper, true);
   }
 
   @Override

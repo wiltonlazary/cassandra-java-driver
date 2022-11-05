@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Indicates that the contacted node reported a protocol error.
@@ -31,16 +34,21 @@ import com.datastax.oss.driver.api.core.retry.RetryPolicy;
  */
 public class ProtocolError extends CoordinatorException {
 
-  public ProtocolError(Node coordinator, String message) {
-    this(coordinator, message, false);
+  public ProtocolError(@NonNull Node coordinator, @NonNull String message) {
+    this(coordinator, message, null, false);
   }
 
-  private ProtocolError(Node coordinator, String message, boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+  private ProtocolError(
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @Nullable ExecutionInfo executionInfo,
+      boolean writableStackTrace) {
+    super(coordinator, message, executionInfo, writableStackTrace);
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new ProtocolError(getCoordinator(), getMessage(), true);
+    return new ProtocolError(getCoordinator(), getMessage(), getExecutionInfo(), true);
   }
 }

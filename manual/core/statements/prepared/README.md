@@ -1,5 +1,21 @@
 ## Prepared statements
 
+### Quick overview
+
+Prepare a query string once, reuse with different values. More efficient than simple statements for
+queries that are used often.
+
+* create the prepared statement with `session.prepare()`, call [bind()][PreparedStatement.bind] or
+  [boundStatementBuilder()][PreparedStatement.boundStatementBuilder] on it to create executable
+  statements.
+* the session has a built-in cache, it's OK to prepare the same string twice.
+* values: `?` or `:name`, fill with `setXxx(int, ...)` or `setXxx(String, ...)` respectively.
+* some values can be left unset with Cassandra 2.2+ / DSE 5+.   
+* built-in implementation is **immutable**. Setters always return a new object, don't ignore the
+  result.
+
+-----
+
 Use prepared statements for queries that are executed multiple times in your application:
 
 ```java
@@ -55,21 +71,70 @@ client                            driver                Cassandra
   |<--------------------------------|                     |
 ```
 
-You should prepare only once, and cache the `PreparedStatement` in your application (it is
-thread-safe). If you call `prepare` multiple times with the same query string, the driver will log a
-warning.
+### Advantages of prepared statements
 
-If you execute a query only once, a prepared statement is inefficient because it requires two round
-trips. Consider a [simple statement](../simple/) instead.
+Beyond saving a bit of parsing overhead on the server, prepared statements have other advantages;
+the `PREPARED` response also contains useful metadata about the CQL query:
+
+* information about the result set that will be produced when the statement gets executed. The
+  driver caches this, so that the server doesn't need to include it with every response. This saves
+  a bit of bandwidth, and the resources it would take to decode it every time.
+* the CQL types of the bound variables. This allows bound statements' `set` methods to perform
+  better checks, and fail fast (without a server round-trip) if the types are wrong.
+* which bound variables are part of the partition key. This allows bound statements to automatically
+  compute their [routing key](../../load_balancing/#token-aware).
+* more optimizations might get added in the future. For example, [CASSANDRA-10813] suggests adding
+  an "[idempotent](../../idempotence)" flag to the response.
+
+If you have a unique query that is executed only once, a [simple statement](../simple/) will be more
+efficient. But note that this should be pretty rare: most client applications typically repeat the
+same queries over and over, and a parameterized version can be extracted and prepared.  
 
 ### Preparing
 
-The `Session.prepare` method accepts either a query string or a `SimpleStatement` object. If you use
-the object variant, both the initial prepare request and future bound statements will share some of
-the options of that simple statement:
+`Session.prepare()` accepts either a plain query string, or a `SimpleStatement` object. If you use a
+`SimpleStatement`, its execution parameters will propagate to bound statements:
 
-* initial prepare request: configuration profile name (or instance) and custom payload.
-* bound statements: configuration profile name (or instance) and custom payload, idempotent flag.
+```java
+SimpleStatement simpleStatement =
+    SimpleStatement.builder("SELECT * FROM product WHERE sku = ?")
+        .setConsistencyLevel(DefaultConsistencyLevel.QUORUM)
+        .build();
+PreparedStatement preparedStatement = session.prepare(simpleStatement);
+BoundStatement boundStatement = preparedStatement.bind();
+assert boundStatement.getConsistencyLevel() == DefaultConsistencyLevel.QUORUM;
+``` 
+
+For more details, including the complete list of attributes that are copied, refer to
+[API docs][Session.prepare].
+
+The driver caches prepared statements: if you call `prepare()` multiple times with the same query
+string (or a `SimpleStatement` with the same execution parameters), you will get the same
+`PreparedStatement` instance:
+ 
+```java
+PreparedStatement ps1 = session.prepare("SELECT * FROM product WHERE sku = ?");
+// The second call hits the cache, nothing is sent to the server:
+PreparedStatement ps2 = session.prepare("SELECT * FROM product WHERE sku = ?");
+assert ps1 == ps2;
+``` 
+ 
+We still recommend avoiding repeated calls to `prepare()`; if that's not possible (e.g. if query
+strings are generated dynamically), there will just be a small performance overhead to check the
+cache on every call.
+
+Note that caching is based on:
+
+* the query string exactly as you provided it: the driver does not perform any kind of trimming or
+  sanitizing.
+* all other execution parameters: for example, preparing two statements with identical query strings
+  but different consistency levels will yield two distinct prepared statements (that each produce
+  bound statements with their respective consistency level).
+
+The size of the cache is exposed as a session-level [metric](../../metrics/)
+`cql-prepared-cache-size`. The cache uses [weak values]([guava eviction]) eviction, so this
+represents the number of `PreparedStatement` instances that your application has created, and is
+still holding a reference to.
 
 ### Parameters and binding
 
@@ -89,7 +154,7 @@ BoundStatement bound = ps1.bind("324378", "LCD screen");
 ```
 
 You can also bind first, then use setters, which is slightly more explicit. Bound statements are 
-immutable, so each method returns a new instance; make sure you don't accidentally discard the
+**immutable**, so each method returns a new instance; make sure you don't accidentally discard the
 result:
 
 ```java
@@ -113,8 +178,8 @@ BoundStatement bound =
       .boundStatementBuilder()
       .setString(0, "324378")
       .setString(1, "LCD screen")
-      .withConfigProfileName("oltp")
-      .withTimestamp(123456789L)
+      .setExecutionProfileName("oltp")
+      .setQueryTimestamp(123456789L)
       .build();
 ```
 
@@ -131,20 +196,22 @@ This can be ambiguous if the query uses the same column multiple times, like in 
 where sku = ? and date > ? and date < ?`. In these situations, use positional setters or named
 parameters.
 
-With native protocol V3, all variables must be bound. With native protocol V4 or above, variables
-can be left unset, in which case they will be ignored (no tombstones will be generated). If you're
-reusing a bound statement, you can use the `unset` method to unset variables that were previously
-set:
+#### Unset values
+
+With [native protocol](../../native_protocol/) V3, all variables must be bound. With native protocol
+V4 (Cassandra 2.2 / DSE 5) or above, variables can be left unset, in which case they will be ignored
+(no tombstones will be generated). If you're reusing a bound statement, you can use the `unset`
+method to unset variables that were previously set:
 
 ```java
 BoundStatement bound = ps1.bind()
   .setString("sku", "324378")
   .setString("description", "LCD screen");
 
-// Positional:
+// Named:
 bound = bound.unset("description");
 
-// Named:
+// Positional:
 bound = bound.unset(1);
 ```
 
@@ -230,28 +297,43 @@ achieve this:
 
 You can customize these strategies through the [configuration](../../configuration/):
 
-* `datastax-java-driver.prepared-statements.prepare-on-all-nodes` controls whether statements are 
-  initially re-prepared on other hosts (step 1 above);
-* `datastax-java-driver.prepared-statements.reprepare-on-up` controls how statements are re-prepared
-  on a node that comes back up (step 2 above).
+* `datastax-java-driver.advanced.prepared-statements.prepare-on-all-nodes` controls whether
+  statements are initially re-prepared on other hosts (step 1 above);
+* `datastax-java-driver.advanced.prepared-statements.reprepare-on-up` controls how statements are
+  re-prepared on a node that comes back up (step 2 above).
 
-Read the `reference.conf` file provided with the driver for a detailed description of each of those
-options.
+Read the [reference configuration](../../configuration/reference/) for a detailed description of each
+of those options.
 
-### Avoid preparing 'SELECT *' queries
+### Prepared statements and schema changes 
 
-Both the driver and Cassandra maintain a mapping of `PreparedStatement` queries to their metadata.
-When a change is made to a table, such as a column being added or dropped, there is currently no
-mechanism for Cassandra to invalidate the existing metadata. Because of this, the driver is not able
-to properly react to these changes and will improperly read rows after a schema change is made.
+**With Cassandra 3 and below, avoid preparing `SELECT *` queries**; the driver does not handle
+schema changes that would affect the results of a prepared statement. Therefore `SELECT *` queries
+can create issues, for example:
 
-Therefore it is currently recommended to not create prepared statements for 'SELECT *' queries if
-you plan on making schema changes involving adding or dropping columns. Instead, you should list all
-columns of interest in your statement, i.e.: `SELECT a, b, c FROM tbl`.
+* table `foo` contains columns `b` and `c`.
+* the driver prepares `SELECT * FROM foo`. It gets a reply indicating that executing this statement
+  will return columns `b` and `c`, and caches that metadata locally (for performance reasons: this
+  avoids sending it with each response later).
+* someone alters table `foo` to add a new column `a`.
+* the next time the driver executes the prepared statement, it gets a response that now contains
+  columns `a`, `b` and `c`. However, it's still using its stale copy of the metadata, so it decodes
+  `a` thinking it's `b`. In the best case scenario, `a` and `b` have different types and decoding
+  fails; in the worst case, they have compatible types and the client gets corrupt data.
 
-This will be addressed in a future release of both Cassandra and the driver. Follow
-[CASSANDRA-10786] and [JAVA-1196] for more information.
+To avoid this, do not create prepared statements for `SELECT *` queries if you plan on making schema
+changes involving adding or dropping columns. Instead, always list all columns of interest in your
+statement, i.e.: `SELECT b, c FROM foo`.
 
-[BoundStatement]:  http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/cql/BoundStatement.html
+With Cassandra 4 and [native protocol](../../native_protocol/) v5, this issue is fixed
+([CASSANDRA-10786]): the server detects that the driver is operating on stale metadata and sends the
+new version with the response; the driver updates its local cache transparently, and the client can
+observe the new columns in the result set.
+
+[BoundStatement]:  https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/BoundStatement.html
+[Session.prepare]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/CqlSession.html#prepare-com.datastax.oss.driver.api.core.cql.SimpleStatement-
 [CASSANDRA-10786]: https://issues.apache.org/jira/browse/CASSANDRA-10786
-[JAVA-1196]:       https://datastax-oss.atlassian.net/browse/JAVA-1196
+[CASSANDRA-10813]: https://issues.apache.org/jira/browse/CASSANDRA-10813
+[guava eviction]: https://github.com/google/guava/wiki/CachesExplained#reference-based-eviction
+[PreparedStatement.bind]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/PreparedStatement.html#bind-java.lang.Object...-
+[PreparedStatement.boundStatementBuilder]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/PreparedStatement.html#boundStatementBuilder-java.lang.Object...-

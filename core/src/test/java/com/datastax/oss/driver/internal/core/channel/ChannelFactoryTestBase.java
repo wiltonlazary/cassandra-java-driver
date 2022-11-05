@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,23 +15,33 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.ProtocolVersion;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
-import com.datastax.oss.driver.api.core.config.DriverConfigProfile;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
 import com.datastax.oss.driver.internal.core.ProtocolVersionRegistry;
 import com.datastax.oss.driver.internal.core.TestResponses;
 import com.datastax.oss.driver.internal.core.context.EventBus;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.context.NettyOptions;
+import com.datastax.oss.driver.internal.core.metrics.NodeMetricUpdater;
 import com.datastax.oss.driver.internal.core.protocol.ByteBufPrimitiveCodec;
 import com.datastax.oss.protocol.internal.Compressor;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.FrameCodec;
 import com.datastax.oss.protocol.internal.Message;
+import com.datastax.oss.protocol.internal.request.Options;
+import com.datastax.oss.protocol.internal.request.Startup;
 import com.datastax.oss.protocol.internal.response.Ready;
 import com.tngtech.java.junit.dataprovider.DataProviderRunner;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -39,13 +49,12 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.DefaultEventLoopGroup;
-import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.channel.local.LocalServerChannel;
-import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Exchanger;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -53,12 +62,8 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.stubbing.Answer;
-
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Sets up the infrastructure for channel factory tests.
@@ -75,18 +80,21 @@ import static org.assertj.core.api.Assertions.fail;
  */
 @RunWith(DataProviderRunner.class)
 public abstract class ChannelFactoryTestBase {
-  static final LocalAddress SERVER_ADDRESS =
-      new LocalAddress(ChannelFactoryTestBase.class.getSimpleName() + "-server");
+  static final EndPoint SERVER_ADDRESS =
+      new LocalEndPoint(ChannelFactoryTestBase.class.getSimpleName() + "-server");
+
+  private static final int TIMEOUT_MILLIS = 500;
 
   DefaultEventLoopGroup serverGroup;
   DefaultEventLoopGroup clientGroup;
 
   @Mock InternalDriverContext context;
   @Mock DriverConfig driverConfig;
-  @Mock DriverConfigProfile defaultConfigProfile;
+  @Mock DriverExecutionProfile defaultProfile;
   @Mock NettyOptions nettyOptions;
   @Mock ProtocolVersionRegistry protocolVersionRegistry;
   @Mock EventBus eventBus;
+  @Mock Compressor<ByteBuf> compressor;
 
   // The server's I/O thread will store the last received request here, and block until the test
   // thread retrieves it. This assumes readOutboundFrame() is called for each actual request, else
@@ -105,40 +113,39 @@ public abstract class ChannelFactoryTestBase {
     serverGroup = new DefaultEventLoopGroup(1);
     clientGroup = new DefaultEventLoopGroup(1);
 
-    Mockito.when(context.config()).thenReturn(driverConfig);
-    Mockito.when(driverConfig.getDefaultProfile()).thenReturn(defaultConfigProfile);
-    Mockito.when(
-            defaultConfigProfile.isDefined(
-                CoreDriverOption.AUTH_PROVIDER_ROOT.concat(CoreDriverOption.RELATIVE_POLICY_CLASS)))
-        .thenReturn(false);
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.CONNECTION_INIT_QUERY_TIMEOUT))
-        .thenReturn(Duration.ofMillis(100));
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.CONNECTION_SET_KEYSPACE_TIMEOUT))
-        .thenReturn(Duration.ofMillis(100));
-    Mockito.when(defaultConfigProfile.getInt(CoreDriverOption.CONNECTION_MAX_REQUESTS))
-        .thenReturn(1);
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.CONNECTION_HEARTBEAT_INTERVAL))
-        .thenReturn(Duration.ofMillis(30000));
+    when(context.getConfig()).thenReturn(driverConfig);
+    when(driverConfig.getDefaultProfile()).thenReturn(defaultProfile);
+    when(defaultProfile.isDefined(DefaultDriverOption.AUTH_PROVIDER_CLASS)).thenReturn(false);
+    when(defaultProfile.getDuration(DefaultDriverOption.CONNECTION_INIT_QUERY_TIMEOUT))
+        .thenReturn(Duration.ofMillis(TIMEOUT_MILLIS));
+    when(defaultProfile.getDuration(DefaultDriverOption.CONNECTION_SET_KEYSPACE_TIMEOUT))
+        .thenReturn(Duration.ofMillis(TIMEOUT_MILLIS));
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS)).thenReturn(1);
+    when(defaultProfile.getDuration(DefaultDriverOption.HEARTBEAT_INTERVAL))
+        .thenReturn(Duration.ofSeconds(30));
+    when(defaultProfile.getDuration(DefaultDriverOption.CONNECTION_CONNECT_TIMEOUT))
+        .thenReturn(Duration.ofSeconds(5));
 
-    Mockito.when(context.protocolVersionRegistry()).thenReturn(protocolVersionRegistry);
-    Mockito.when(context.nettyOptions()).thenReturn(nettyOptions);
-    Mockito.when(nettyOptions.ioEventLoopGroup()).thenReturn(clientGroup);
-    Mockito.when(nettyOptions.channelClass()).thenAnswer((Answer<Object>) i -> LocalChannel.class);
-    Mockito.when(nettyOptions.allocator()).thenReturn(ByteBufAllocator.DEFAULT);
-    Mockito.when(context.frameCodec())
+    when(context.getProtocolVersionRegistry()).thenReturn(protocolVersionRegistry);
+    when(context.getNettyOptions()).thenReturn(nettyOptions);
+    when(nettyOptions.ioEventLoopGroup()).thenReturn(clientGroup);
+    when(nettyOptions.channelClass()).thenAnswer((Answer<Object>) i -> LocalChannel.class);
+    when(nettyOptions.allocator()).thenReturn(ByteBufAllocator.DEFAULT);
+    when(context.getFrameCodec())
         .thenReturn(
             FrameCodec.defaultClient(
                 new ByteBufPrimitiveCodec(ByteBufAllocator.DEFAULT), Compressor.none()));
-    Mockito.when(context.sslHandlerFactory()).thenReturn(Optional.empty());
-    Mockito.when(context.eventBus()).thenReturn(eventBus);
-    Mockito.when(context.writeCoalescer()).thenReturn(new PassThroughWriteCoalescer(null, null));
+    when(context.getSslHandlerFactory()).thenReturn(Optional.empty());
+    when(context.getEventBus()).thenReturn(eventBus);
+    when(context.getWriteCoalescer()).thenReturn(new PassThroughWriteCoalescer(null));
+    when(context.getCompressor()).thenReturn(compressor);
 
     // Start local server
     ServerBootstrap serverBootstrap =
         new ServerBootstrap()
             .group(serverGroup)
             .channel(LocalServerChannel.class)
-            .localAddress(SERVER_ADDRESS)
+            .localAddress(SERVER_ADDRESS.resolve())
             .childHandler(new ServerInitializer());
     ChannelFuture channelFuture = serverBootstrap.bind().sync();
     serverAcceptChannel = (LocalServerChannel) channelFuture.sync().channel();
@@ -168,7 +175,7 @@ public abstract class ChannelFactoryTestBase {
 
   protected Frame readOutboundFrame() {
     try {
-      return requestFrameExchanger.exchange(null, 100, MILLISECONDS);
+      return requestFrameExchanger.exchange(null, TIMEOUT_MILLIS, MILLISECONDS);
     } catch (InterruptedException e) {
       fail("unexpected interruption while waiting for outbound frame", e);
     } catch (TimeoutException e) {
@@ -198,6 +205,11 @@ public abstract class ChannelFactoryTestBase {
    */
   protected void completeSimpleChannelInit() {
     Frame requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Options.class);
+    writeInboundFrame(requestFrame, TestResponses.supportedResponse("mock_key", "mock_value"));
+
+    requestFrame = readOutboundFrame();
+    assertThat(requestFrame.message).isInstanceOf(Startup.class);
     writeInboundFrame(requestFrame, new Ready());
 
     requestFrame = readOutboundFrame();
@@ -219,38 +231,51 @@ public abstract class ChannelFactoryTestBase {
 
     @Override
     ChannelInitializer<Channel> initializer(
-        SocketAddress address,
+        EndPoint endPoint,
         ProtocolVersion protocolVersion,
         DriverChannelOptions options,
-        AvailableIdsHolder availableIdsHolder) {
+        NodeMetricUpdater nodeMetricUpdater,
+        CompletableFuture<DriverChannel> resultFuture) {
       return new ChannelInitializer<Channel>() {
         @Override
         protected void initChannel(Channel channel) throws Exception {
-          DriverConfigProfile defaultConfigProfile = context.config().getDefaultProfile();
+          try {
+            DriverExecutionProfile defaultProfile = context.getConfig().getDefaultProfile();
 
-          long setKeyspaceTimeoutMillis =
-              defaultConfigProfile
-                  .getDuration(CoreDriverOption.CONNECTION_SET_KEYSPACE_TIMEOUT)
-                  .toMillis();
-          int maxRequestsPerConnection =
-              defaultConfigProfile.getInt(CoreDriverOption.CONNECTION_MAX_REQUESTS);
+            long setKeyspaceTimeoutMillis =
+                defaultProfile
+                    .getDuration(DefaultDriverOption.CONNECTION_SET_KEYSPACE_TIMEOUT)
+                    .toMillis();
+            int maxRequestsPerConnection =
+                defaultProfile.getInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS);
 
-          InFlightHandler inFlightHandler =
-              new InFlightHandler(
-                  protocolVersion,
-                  new StreamIdGenerator(maxRequestsPerConnection),
-                  Integer.MAX_VALUE,
-                  setKeyspaceTimeoutMillis,
-                  availableIdsHolder,
-                  channel.newPromise(),
-                  null,
-                  "test");
+            InFlightHandler inFlightHandler =
+                new InFlightHandler(
+                    protocolVersion,
+                    new StreamIdGenerator(maxRequestsPerConnection),
+                    Integer.MAX_VALUE,
+                    setKeyspaceTimeoutMillis,
+                    channel.newPromise(),
+                    null,
+                    "test");
 
-          HeartbeatHandler heartbeatHandler = new HeartbeatHandler(defaultConfigProfile);
-          ProtocolInitHandler initHandler =
-              new ProtocolInitHandler(
-                  context, protocolVersion, clusterName, options, heartbeatHandler);
-          channel.pipeline().addLast("inflight", inFlightHandler).addLast("init", initHandler);
+            HeartbeatHandler heartbeatHandler = new HeartbeatHandler(defaultProfile);
+            ProtocolInitHandler initHandler =
+                new ProtocolInitHandler(
+                    context,
+                    protocolVersion,
+                    getClusterName(),
+                    endPoint,
+                    options,
+                    heartbeatHandler,
+                    productType == null);
+            channel
+                .pipeline()
+                .addLast(ChannelFactory.INFLIGHT_HANDLER_NAME, inFlightHandler)
+                .addLast(ChannelFactory.INIT_HANDLER_NAME, initHandler);
+          } catch (Throwable t) {
+            resultFuture.completeExceptionally(t);
+          }
         }
       };
     }
@@ -260,7 +285,11 @@ public abstract class ChannelFactoryTestBase {
   public void tearDown() throws InterruptedException {
     serverAcceptChannel.close();
 
-    serverGroup.shutdownGracefully(100, 200, TimeUnit.MILLISECONDS).sync();
-    clientGroup.shutdownGracefully(100, 200, TimeUnit.MILLISECONDS).sync();
+    serverGroup
+        .shutdownGracefully(TIMEOUT_MILLIS, TIMEOUT_MILLIS * 2, TimeUnit.MILLISECONDS)
+        .sync();
+    clientGroup
+        .shutdownGracefully(TIMEOUT_MILLIS, TIMEOUT_MILLIS * 2, TimeUnit.MILLISECONDS)
+        .sync();
   }
 }

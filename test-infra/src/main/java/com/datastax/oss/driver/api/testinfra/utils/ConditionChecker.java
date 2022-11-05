@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package com.datastax.oss.driver.api.testinfra.utils;
 
+import static org.assertj.core.api.Fail.fail;
+
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.TimeUnit;
@@ -23,14 +25,21 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
 
-import static org.assertj.core.api.Fail.fail;
-
+/**
+ * @deprecated We've replaced this home-grown utility by Awaitility in our tests. We're preserving
+ *     it because it was part of the public test infrastructure API, but it won't be maintained
+ *     anymore, and removed in the next major version.
+ * @see <a href="https://github.com/awaitility/awaitility">Awaitility homepage</a>
+ */
+@Deprecated
 public class ConditionChecker {
 
   private static final int DEFAULT_PERIOD_MILLIS = 500;
 
   private static final int DEFAULT_TIMEOUT_MILLIS = 60000;
 
+  /** @deprecated see {@link ConditionChecker} */
+  @Deprecated
   public static class ConditionCheckerBuilder {
 
     private long timeout = DEFAULT_TIMEOUT_MILLIS;
@@ -107,6 +116,7 @@ public class ConditionChecker {
   private final Lock lock;
   private final Condition condition;
   private final Timer timer;
+  private Throwable lastFailure;
 
   public ConditionChecker(
       Object predicate,
@@ -138,11 +148,17 @@ public class ConditionChecker {
     lock.lock();
     try {
       while (!evalCondition()) {
-        if (nanos <= 0L)
-          fail(
+        if (nanos <= 0L) {
+          String msg =
               String.format(
                   "Timeout after %s %s while waiting for '%s'",
-                  timeout, unit.toString().toLowerCase(), description));
+                  timeout, unit.toString().toLowerCase(), description);
+          if (lastFailure != null) {
+            fail(msg, lastFailure);
+          } else {
+            fail(msg);
+          }
+        }
         try {
           nanos = condition.awaitNanos(nanos);
         } catch (InterruptedException e) {
@@ -175,6 +191,7 @@ public class ConditionChecker {
         ((Runnable) predicate).run();
       } catch (Throwable t) {
         succeeded = false;
+        lastFailure = t;
       }
       return succeeded == expectedOutcome;
     } else {

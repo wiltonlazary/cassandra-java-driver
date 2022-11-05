@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,16 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
+import com.datastax.oss.driver.internal.core.metrics.NoopNodeMetricUpdater;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.request.Query;
 import com.datastax.oss.protocol.internal.response.result.Void;
@@ -25,89 +33,54 @@ import java.util.concurrent.CompletionStage;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.timeout;
 
 public class ChannelFactoryAvailableIdsTest extends ChannelFactoryTestBase {
 
   @Mock private ResponseCallback responseCallback;
 
   @Before
+  @Override
   public void setup() throws InterruptedException {
     super.setup();
-    Mockito.when(defaultConfigProfile.isDefined(CoreDriverOption.PROTOCOL_VERSION))
-        .thenReturn(true);
-    Mockito.when(defaultConfigProfile.getString(CoreDriverOption.PROTOCOL_VERSION))
-        .thenReturn("V4");
-    Mockito.when(protocolVersionRegistry.fromName("V4")).thenReturn(CoreProtocolVersion.V4);
+    when(defaultProfile.isDefined(DefaultDriverOption.PROTOCOL_VERSION)).thenReturn(true);
+    when(defaultProfile.getString(DefaultDriverOption.PROTOCOL_VERSION)).thenReturn("V4");
+    when(protocolVersionRegistry.fromName("V4")).thenReturn(DefaultProtocolVersion.V4);
 
-    Mockito.when(defaultConfigProfile.getInt(CoreDriverOption.CONNECTION_MAX_REQUESTS))
-        .thenReturn(128);
+    when(defaultProfile.getInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS)).thenReturn(128);
+
+    when(responseCallback.isLastResponse(any(Frame.class))).thenReturn(true);
   }
 
   @Test
-  public void should_report_available_ids_if_requested() {
+  public void should_report_available_ids() {
     // Given
     ChannelFactory factory = newChannelFactory();
 
     // When
     CompletionStage<DriverChannel> channelFuture =
         factory.connect(
-            SERVER_ADDRESS, DriverChannelOptions.builder().reportAvailableIds(true).build());
+            SERVER_ADDRESS, DriverChannelOptions.builder().build(), NoopNodeMetricUpdater.INSTANCE);
     completeSimpleChannelInit();
 
     // Then
-    assertThat(channelFuture)
+    assertThatStage(channelFuture)
         .isSuccess(
             channel -> {
-              assertThat(channel.availableIds()).isEqualTo(128);
+              assertThat(channel.getAvailableIds()).isEqualTo(128);
 
               // Write a request, should decrease the count
+              assertThat(channel.preAcquireId()).isTrue();
               Future<java.lang.Void> writeFuture =
                   channel.write(new Query("test"), false, Frame.NO_PAYLOAD, responseCallback);
               assertThat(writeFuture)
                   .isSuccess(
                       v -> {
-                        assertThat(channel.availableIds()).isEqualTo(127);
+                        assertThat(channel.getAvailableIds()).isEqualTo(127);
 
                         // Complete the request, should increase again
                         writeInboundFrame(readOutboundFrame(), Void.INSTANCE);
-                        Mockito.verify(responseCallback, timeout(100)).onResponse(any(Frame.class));
-                        assertThat(channel.availableIds()).isEqualTo(128);
-                      });
-            });
-  }
-
-  @Test
-  public void should_not_report_available_ids_if_not_requested() {
-    // Given
-    ChannelFactory factory = newChannelFactory();
-
-    // When
-    CompletionStage<DriverChannel> channelFuture =
-        factory.connect(SERVER_ADDRESS, DriverChannelOptions.DEFAULT);
-    completeSimpleChannelInit();
-
-    // Then
-    assertThat(channelFuture)
-        .isSuccess(
-            channel -> {
-              assertThat(channel.availableIds()).isEqualTo(-1);
-
-              // Write a request, complete it, count should never be updated
-              Future<java.lang.Void> writeFuture =
-                  channel.write(new Query("test"), false, Frame.NO_PAYLOAD, responseCallback);
-              assertThat(writeFuture)
-                  .isSuccess(
-                      v -> {
-                        assertThat(channel.availableIds()).isEqualTo(-1);
-
-                        writeInboundFrame(readOutboundFrame(), Void.INSTANCE);
-                        Mockito.verify(responseCallback, timeout(100)).onResponse(any(Frame.class));
-                        assertThat(channel.availableIds()).isEqualTo(-1);
+                        verify(responseCallback, timeout(500)).onResponse(any(Frame.class));
+                        assertThat(channel.getAvailableIds()).isEqualTo(128);
                       });
             });
   }

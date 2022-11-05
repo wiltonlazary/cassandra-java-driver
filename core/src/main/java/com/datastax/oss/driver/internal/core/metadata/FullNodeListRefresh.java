@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,73 +16,109 @@
 package com.datastax.oss.driver.internal.core.metadata;
 
 import com.datastax.oss.driver.api.core.metadata.Node;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
-import java.net.InetSocketAddress;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metadata.token.DefaultTokenMap;
+import com.datastax.oss.driver.internal.core.metadata.token.TokenFactory;
+import com.datastax.oss.driver.internal.core.metadata.token.TokenFactoryRegistry;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@ThreadSafe
 class FullNodeListRefresh extends NodesRefresh {
 
   private static final Logger LOG = LoggerFactory.getLogger(FullNodeListRefresh.class);
 
   @VisibleForTesting final Iterable<NodeInfo> nodeInfos;
 
-  FullNodeListRefresh(DefaultMetadata current, Iterable<NodeInfo> nodeInfos, String logPrefix) {
-    super(current, logPrefix);
+  FullNodeListRefresh(Iterable<NodeInfo> nodeInfos) {
     this.nodeInfos = nodeInfos;
   }
 
-  protected Map<InetSocketAddress, Node> computeNewNodes() {
+  @Override
+  public Result compute(
+      DefaultMetadata oldMetadata, boolean tokenMapEnabled, InternalDriverContext context) {
 
-    Map<InetSocketAddress, Node> oldNodes = oldMetadata.getNodes();
+    String logPrefix = context.getSessionName();
+    TokenFactoryRegistry tokenFactoryRegistry = context.getTokenFactoryRegistry();
 
-    Map<InetSocketAddress, Node> added = new HashMap<>();
-    Set<InetSocketAddress> seen = new HashSet<>();
+    Map<UUID, Node> oldNodes = oldMetadata.getNodes();
+
+    Map<UUID, Node> added = new HashMap<>();
+    Set<UUID> seen = new HashSet<>();
+
+    TokenFactory tokenFactory =
+        oldMetadata.getTokenMap().map(m -> ((DefaultTokenMap) m).getTokenFactory()).orElse(null);
+    boolean tokensChanged = false;
 
     for (NodeInfo nodeInfo : nodeInfos) {
-      InetSocketAddress address = nodeInfo.getConnectAddress();
-      if (address == null) {
-        LOG.warn("[{}] Got node info with no connect address, ignoring", logPrefix);
-        continue;
+      UUID id = nodeInfo.getHostId();
+      if (seen.contains(id)) {
+        LOG.warn(
+            "[{}] Found duplicate entries with host_id {} in system.peers, "
+                + "keeping only the first one",
+            logPrefix,
+            id);
+      } else {
+        seen.add(id);
+        DefaultNode node = (DefaultNode) oldNodes.get(id);
+        if (node == null) {
+          node = new DefaultNode(nodeInfo.getEndPoint(), context);
+          LOG.debug("[{}] Adding new node {}", logPrefix, node);
+          added.put(id, node);
+        }
+        if (tokenFactory == null && nodeInfo.getPartitioner() != null) {
+          tokenFactory = tokenFactoryRegistry.tokenFactoryFor(nodeInfo.getPartitioner());
+        }
+        tokensChanged |= copyInfos(nodeInfo, node, context);
       }
-      seen.add(address);
-      DefaultNode node = (DefaultNode) oldNodes.get(address);
-      if (node == null) {
-        node = new DefaultNode(address);
-        LOG.debug("[{}] Adding new node {}", logPrefix, node);
-        added.put(address, node);
-      }
-      copyInfos(nodeInfo, node, logPrefix);
     }
 
-    Set<InetSocketAddress> removed = Sets.difference(oldNodes.keySet(), seen);
+    Set<UUID> removed = Sets.difference(oldNodes.keySet(), seen);
 
-    if (added.isEmpty() && removed.isEmpty()) {
-      return oldNodes;
+    if (added.isEmpty() && removed.isEmpty()) { // The list didn't change
+      if (!oldMetadata.getTokenMap().isPresent() && tokenFactory != null) {
+        // First time we found out what the partitioner is => set the token factory and trigger a
+        // token map rebuild:
+        return new Result(
+            oldMetadata.withNodes(
+                oldMetadata.getNodes(), tokenMapEnabled, true, tokenFactory, context));
+      } else {
+        // No need to create a new metadata instance
+        return new Result(oldMetadata);
+      }
     } else {
-      ImmutableMap.Builder<InetSocketAddress, Node> newNodesBuilder = ImmutableMap.builder();
+      ImmutableMap.Builder<UUID, Node> newNodesBuilder = ImmutableMap.builder();
+      ImmutableList.Builder<Object> eventsBuilder = ImmutableList.builder();
+
       newNodesBuilder.putAll(added);
-      for (Map.Entry<InetSocketAddress, Node> entry : oldNodes.entrySet()) {
+      for (Map.Entry<UUID, Node> entry : oldNodes.entrySet()) {
         if (!removed.contains(entry.getKey())) {
           newNodesBuilder.put(entry.getKey(), entry.getValue());
         }
       }
 
       for (Node node : added.values()) {
-        events.add(NodeStateEvent.added((DefaultNode) node));
+        eventsBuilder.add(NodeStateEvent.added((DefaultNode) node));
       }
-      for (InetSocketAddress address : removed) {
-        Node node = oldNodes.get(address);
-        events.add(NodeStateEvent.removed((DefaultNode) node));
+      for (UUID id : removed) {
+        Node node = oldNodes.get(id);
+        eventsBuilder.add(NodeStateEvent.removed((DefaultNode) node));
       }
 
-      return newNodesBuilder.build();
+      return new Result(
+          oldMetadata.withNodes(
+              newNodesBuilder.build(), tokenMapEnabled, tokensChanged, tokenFactory, context),
+          eventsBuilder.build());
     }
   }
 }

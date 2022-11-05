@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package com.datastax.oss.driver.api.core.auth;
 
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletionStage;
 
@@ -55,8 +57,13 @@ public interface Authenticator {
    * Obtain an initial response token for initializing the SASL handshake.
    *
    * @return a completion stage that will complete with the initial response to send to the server
-   *     (which may be null).
+   *     (which may be {@code null}). Note that, if the returned byte buffer is writable, the driver
+   *     will <b>clear its contents</b> immediately after use (to avoid keeping sensitive
+   *     information in memory); do not reuse the same buffer across multiple invocations.
+   *     Alternatively, if the contents are not sensitive, you can make the buffer {@linkplain
+   *     ByteBuffer#asReadOnlyBuffer() read-only} and safely reuse it.
    */
+  @NonNull
   CompletionStage<ByteBuffer> initialResponse();
 
   /**
@@ -65,9 +72,14 @@ public interface Authenticator {
    *
    * @param challenge the server's SASL challenge.
    * @return a completion stage that will complete with the updated SASL token (which may be null to
-   *     indicate the client requires no further action).
+   *     indicate the client requires no further action). Note that, if the returned byte buffer is
+   *     writable, the driver will <b>clear its contents</b> immediately after use (to avoid keeping
+   *     sensitive information in memory); do not reuse the same buffer across multiple invocations.
+   *     Alternatively, if the contents are not sensitive, you can make the buffer {@linkplain
+   *     ByteBuffer#asReadOnlyBuffer() read-only} and safely reuse it.
    */
-  CompletionStage<ByteBuffer> evaluateChallenge(ByteBuffer challenge);
+  @NonNull
+  CompletionStage<ByteBuffer> evaluateChallenge(@Nullable ByteBuffer challenge);
 
   /**
    * Called when authentication is successful with the last information optionally sent by the
@@ -79,5 +91,6 @@ public interface Authenticator {
    * @return a completion stage that completes when the authenticator is done processing this
    *     response.
    */
-  CompletionStage<Void> onAuthenticationSuccess(ByteBuffer token);
+  @NonNull
+  CompletionStage<Void> onAuthenticationSuccess(@Nullable ByteBuffer token);
 }

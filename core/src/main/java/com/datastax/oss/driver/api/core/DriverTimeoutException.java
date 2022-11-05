@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,22 @@
  */
 package com.datastax.oss.driver.api.core;
 
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import edu.umd.cs.findbugs.annotations.NonNull;
+
 /** Thrown when a driver request timed out. */
 public class DriverTimeoutException extends DriverException {
-  public DriverTimeoutException(String message) {
-    super(message, null, true);
+  public DriverTimeoutException(@NonNull String message) {
+    this(message, null);
   }
 
+  private DriverTimeoutException(String message, ExecutionInfo executionInfo) {
+    super(message, executionInfo, null, true);
+  }
+
+  @NonNull
   @Override
   public DriverException copy() {
-    return new DriverTimeoutException(getMessage());
+    return new DriverTimeoutException(getMessage(), getExecutionInfo());
   }
 }

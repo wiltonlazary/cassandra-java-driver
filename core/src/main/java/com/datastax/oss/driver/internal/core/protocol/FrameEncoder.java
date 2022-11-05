@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,8 +23,10 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageEncoder;
 import java.util.List;
+import net.jcip.annotations.ThreadSafe;
 
 @ChannelHandler.Sharable
+@ThreadSafe
 public class FrameEncoder extends MessageToMessageEncoder<Frame> {
 
   private final FrameCodec<ByteBuf> frameCodec;

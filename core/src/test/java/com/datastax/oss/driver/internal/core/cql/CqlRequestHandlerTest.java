@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,28 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.DriverTimeoutException;
 import com.datastax.oss.driver.api.core.NoNodeAvailableException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.NodeUnavailableException;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.BoundStatement;
+import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.cql.Row;
+import com.datastax.oss.driver.api.core.cql.Statement;
+import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.internal.core.session.RepreparePayload;
-import com.datastax.oss.driver.internal.core.util.concurrent.ScheduledTaskCapturingEventLoop;
+import com.datastax.oss.driver.internal.core.util.concurrent.CapturingTimer.CapturedTimeout;
 import com.datastax.oss.protocol.internal.request.Prepare;
 import com.datastax.oss.protocol.internal.response.error.Unprepared;
 import com.datastax.oss.protocol.internal.response.result.Prepared;
@@ -35,14 +46,13 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import org.junit.Test;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
 
@@ -59,9 +69,9 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
                   harness.getSession(),
                   harness.getContext(),
                   "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet -> {
                 Iterator<Row> rows = resultSet.currentPage().iterator();
@@ -93,15 +103,52 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
                   harness.getSession(),
                   harness.getContext(),
                   "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(error -> assertThat(error).isInstanceOf(NoNodeAvailableException.class));
     }
   }
 
   @Test
-  public void should_time_out_if_first_node_takes_too_long_to_respond() {
+  public void should_fail_if_nodes_unavailable() {
+    RequestHandlerTestHarness.Builder harnessBuilder = RequestHandlerTestHarness.builder();
+    try (RequestHandlerTestHarness harness =
+        harnessBuilder.withEmptyPool(node1).withEmptyPool(node2).build()) {
+      CompletionStage<AsyncResultSet> resultSetFuture =
+          new CqlRequestHandler(
+                  UNDEFINED_IDEMPOTENCE_STATEMENT,
+                  harness.getSession(),
+                  harness.getContext(),
+                  "test")
+              .handle();
+      assertThatStage(resultSetFuture)
+          .isFailed(
+              error -> {
+                assertThat(error).isInstanceOf(AllNodesFailedException.class);
+                Map<Node, List<Throwable>> allErrors =
+                    ((AllNodesFailedException) error).getAllErrors();
+                assertThat(allErrors).hasSize(2);
+                assertThat(allErrors)
+                    .hasEntrySatisfying(
+                        node1,
+                        nodeErrors ->
+                            assertThat(nodeErrors)
+                                .singleElement()
+                                .isInstanceOf(NodeUnavailableException.class));
+                assertThat(allErrors)
+                    .hasEntrySatisfying(
+                        node2,
+                        nodeErrors ->
+                            assertThat(nodeErrors)
+                                .singleElement()
+                                .isInstanceOf(NodeUnavailableException.class));
+              });
+    }
+  }
+
+  @Test
+  public void should_time_out_if_first_node_takes_too_long_to_respond() throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder = RequestHandlerTestHarness.builder();
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
     node1Behavior.setWriteSuccess();
@@ -114,21 +161,21 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
                   harness.getSession(),
                   harness.getContext(),
                   "test")
-              .asyncResult();
+              .handle();
 
       // First scheduled task is the timeout, run it before node1 has responded
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> scheduledTask = harness.nextScheduledTask();
-      Duration configuredTimeout =
+      CapturedTimeout requestTimeout = harness.nextScheduledTimeout();
+      Duration configuredTimeoutDuration =
           harness
               .getContext()
-              .config()
+              .getConfig()
               .getDefaultProfile()
-              .getDuration(CoreDriverOption.REQUEST_TIMEOUT);
-      assertThat(scheduledTask.getInitialDelay(TimeUnit.NANOSECONDS))
-          .isEqualTo(configuredTimeout.toNanos());
-      scheduledTask.run();
+              .getDuration(DefaultDriverOption.REQUEST_TIMEOUT);
+      assertThat(requestTimeout.getDelay(TimeUnit.NANOSECONDS))
+          .isEqualTo(configuredTimeoutDuration.toNanos());
+      requestTimeout.task().run(requestTimeout);
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(t -> assertThat(t).isInstanceOf(DriverTimeoutException.class));
     }
   }
@@ -146,12 +193,12 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
                   harness.getSession(),
                   harness.getContext(),
                   "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet ->
-                  Mockito.verify(harness.getSession())
+                  verify(harness.getSession())
                       .setKeyspace(CqlIdentifier.fromInternal("newKeyspace")));
     }
   }
@@ -160,11 +207,15 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
   public void should_reprepare_on_the_fly_if_not_prepared() throws InterruptedException {
     ByteBuffer mockId = Bytes.fromHexString("0xffff");
 
-    PreparedStatement preparedStatement = Mockito.mock(PreparedStatement.class);
-    Mockito.when(preparedStatement.getId()).thenReturn(mockId);
-    BoundStatement boundStatement = Mockito.mock(BoundStatement.class);
-    Mockito.when(boundStatement.getPreparedStatement()).thenReturn(preparedStatement);
-    Mockito.when(boundStatement.getValues()).thenReturn(Collections.emptyList());
+    PreparedStatement preparedStatement = mock(PreparedStatement.class);
+    when(preparedStatement.getId()).thenReturn(mockId);
+    ColumnDefinitions columnDefinitions = mock(ColumnDefinitions.class);
+    when(columnDefinitions.size()).thenReturn(0);
+    when(preparedStatement.getResultSetDefinitions()).thenReturn(columnDefinitions);
+    BoundStatement boundStatement = mock(BoundStatement.class);
+    when(boundStatement.getPreparedStatement()).thenReturn(preparedStatement);
+    when(boundStatement.getValues()).thenReturn(Collections.emptyList());
+    when(boundStatement.getNowInSeconds()).thenReturn(Statement.NO_NOW_IN_SECONDS);
 
     RequestHandlerTestHarness.Builder harnessBuilder = RequestHandlerTestHarness.builder();
     // For the first attempt that gets the UNPREPARED response
@@ -178,23 +229,23 @@ public class CqlRequestHandlerTest extends CqlRequestHandlerTestBase {
       ConcurrentMap<ByteBuffer, RepreparePayload> repreparePayloads = new ConcurrentHashMap<>();
       repreparePayloads.put(
           mockId, new RepreparePayload(mockId, "mock query", null, Collections.emptyMap()));
-      Mockito.when(harness.getSession().getRepreparePayloads()).thenReturn(repreparePayloads);
+      when(harness.getSession().getRepreparePayloads()).thenReturn(repreparePayloads);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(boundStatement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
       // Before we proceed, mock the PREPARE exchange that will occur as soon as we complete the
       // first response.
       node1Behavior.mockFollowupRequest(
-          Prepare.class, defaultFrameOf(new Prepared(mockId.array(), null, null)));
+          Prepare.class, defaultFrameOf(new Prepared(Bytes.getArray(mockId), null, null, null)));
 
       node1Behavior.setWriteSuccess();
       node1Behavior.setResponseSuccess(
-          defaultFrameOf(new Unprepared("mock message", mockId.array())));
+          defaultFrameOf(new Unprepared("mock message", Bytes.getArray(mockId))));
 
       // Should now re-prepare, re-execute and succeed.
-      assertThat(resultSetFuture).isSuccess();
+      assertThatStage(resultSetFuture).isSuccess();
     }
   }
 }

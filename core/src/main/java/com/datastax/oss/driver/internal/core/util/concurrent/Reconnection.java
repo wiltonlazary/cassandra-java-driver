@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
-import com.datastax.oss.driver.api.core.connection.ReconnectionPolicy;
+import com.datastax.oss.driver.api.core.connection.ReconnectionPolicy.ReconnectionSchedule;
+import com.datastax.oss.driver.internal.core.util.Loggers;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ScheduledFuture;
@@ -24,6 +25,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import net.jcip.annotations.NotThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,6 +37,7 @@ import org.slf4j.LoggerFactory;
  * <p>All the tasks run on a Netty event executor that is provided at construction time. Clients are
  * also expected to call the public methods on that thread.
  */
+@NotThreadSafe // must be confined to executor
 public class Reconnection {
   private static final Logger LOG = LoggerFactory.getLogger(Reconnection.class);
 
@@ -47,13 +51,13 @@ public class Reconnection {
 
   private final String logPrefix;
   private final EventExecutor executor;
-  private final ReconnectionPolicy reconnectionPolicy;
+  private final Supplier<ReconnectionSchedule> scheduleSupplier;
   private final Callable<CompletionStage<Boolean>> reconnectionTask;
   private final Runnable onStart;
   private final Runnable onStop;
 
   private State state = State.STOPPED;
-  private ReconnectionPolicy.ReconnectionSchedule reconnectionSchedule;
+  private ReconnectionSchedule reconnectionSchedule;
   private ScheduledFuture<CompletionStage<Boolean>> nextAttempt;
 
   /**
@@ -63,13 +67,13 @@ public class Reconnection {
   public Reconnection(
       String logPrefix,
       EventExecutor executor,
-      ReconnectionPolicy reconnectionPolicy,
+      Supplier<ReconnectionSchedule> scheduleSupplier,
       Callable<CompletionStage<Boolean>> reconnectionTask,
       Runnable onStart,
       Runnable onStop) {
     this.logPrefix = logPrefix;
     this.executor = executor;
-    this.reconnectionPolicy = reconnectionPolicy;
+    this.scheduleSupplier = scheduleSupplier;
     this.reconnectionTask = reconnectionTask;
     this.onStart = onStart;
     this.onStop = onStop;
@@ -78,9 +82,9 @@ public class Reconnection {
   public Reconnection(
       String logPrefix,
       EventExecutor executor,
-      ReconnectionPolicy reconnectionPolicy,
+      Supplier<ReconnectionSchedule> scheduleSupplier,
       Callable<CompletionStage<Boolean>> reconnectionTask) {
-    this(logPrefix, executor, reconnectionPolicy, reconnectionTask, () -> {}, () -> {});
+    this(logPrefix, executor, scheduleSupplier, reconnectionTask, () -> {}, () -> {});
   }
 
   /**
@@ -94,6 +98,10 @@ public class Reconnection {
 
   /** This is a no-op if the reconnection is already running. */
   public void start() {
+    start(null);
+  }
+
+  public void start(ReconnectionSchedule customSchedule) {
     assert executor.inEventLoop();
     switch (state) {
       case SCHEDULED:
@@ -105,7 +113,7 @@ public class Reconnection {
         state = State.ATTEMPT_IN_PROGRESS;
         break;
       case STOPPED:
-        reconnectionSchedule = reconnectionPolicy.newSchedule();
+        reconnectionSchedule = (customSchedule == null) ? scheduleSupplier.get() : customSchedule;
         onStart.run();
         scheduleNextAttempt();
         break;
@@ -140,7 +148,8 @@ public class Reconnection {
       try {
         onNextAttemptStarted(reconnectionTask.call());
       } catch (Exception e) {
-        LOG.warn("[{}] Uncaught error while starting reconnection attempt", logPrefix, e);
+        Loggers.warnWithException(
+            LOG, "[{}] Uncaught error while starting reconnection attempt", logPrefix, e);
         scheduleNextAttempt();
       }
     }
@@ -176,7 +185,7 @@ public class Reconnection {
     assert executor.inEventLoop();
     state = State.SCHEDULED;
     if (reconnectionSchedule == null) { // happens if reconnectNow() while we were stopped
-      reconnectionSchedule = reconnectionPolicy.newSchedule();
+      reconnectionSchedule = scheduleSupplier.get();
     }
     Duration nextInterval = reconnectionSchedule.nextDelay();
     LOG.debug("[{}] Scheduling next reconnection in {}", logPrefix, nextInterval);
@@ -186,8 +195,11 @@ public class Reconnection {
           if (f.isSuccess()) {
             onNextAttemptStarted(f.getNow());
           } else if (!f.isCancelled()) {
-            LOG.warn(
-                "[{}] Uncaught error while starting reconnection attempt", logPrefix, f.cause());
+            Loggers.warnWithException(
+                LOG,
+                "[{}] Uncaught error while starting reconnection attempt",
+                logPrefix,
+                f.cause());
             scheduleNextAttempt();
           }
         });
@@ -210,7 +222,8 @@ public class Reconnection {
       reallyStop();
     } else {
       if (error != null && !(error instanceof CancellationException)) {
-        LOG.warn("[{}] Uncaught error while starting reconnection attempt", logPrefix, error);
+        Loggers.warnWithException(
+            LOG, "[{}] Uncaught error while starting reconnection attempt", logPrefix, error);
       }
       if (state == State.STOP_AFTER_CURRENT) {
         reallyStop();

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,16 +20,19 @@ import com.datastax.oss.driver.api.core.cql.ColumnDefinition;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.internal.core.data.IdentifierIndex;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import net.jcip.annotations.Immutable;
 
-public class DefaultColumnDefinitions implements ColumnDefinitions {
+@Immutable
+public class DefaultColumnDefinitions implements ColumnDefinitions, Serializable {
 
-  static ColumnDefinitions valueOf(List<ColumnDefinition> definitions) {
+  public static ColumnDefinitions valueOf(List<ColumnDefinition> definitions) {
     return definitions.isEmpty()
         ? EmptyColumnDefinitions.INSTANCE
         : new DefaultColumnDefinitions(definitions);
@@ -49,33 +52,47 @@ public class DefaultColumnDefinitions implements ColumnDefinitions {
     return definitions.size();
   }
 
+  @NonNull
   @Override
   public ColumnDefinition get(int i) {
     return definitions.get(i);
   }
 
+  @NonNull
   @Override
   public Iterator<ColumnDefinition> iterator() {
     return definitions.iterator();
   }
 
   @Override
-  public boolean contains(String name) {
+  public boolean contains(@NonNull String name) {
     return index.firstIndexOf(name) >= 0;
   }
 
   @Override
-  public boolean contains(CqlIdentifier id) {
+  public boolean contains(@NonNull CqlIdentifier id) {
     return index.firstIndexOf(id) >= 0;
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(String name) {
-    return index.firstIndexOf(name);
+  public List<Integer> allIndicesOf(@NonNull String name) {
+    return index.allIndicesOf(name);
   }
 
   @Override
-  public int firstIndexOf(CqlIdentifier id) {
+  public int firstIndexOf(@NonNull String name) {
+    return index.firstIndexOf(name);
+  }
+
+  @NonNull
+  @Override
+  public List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    return index.allIndicesOf(id);
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull CqlIdentifier id) {
     return index.firstIndexOf(id);
   }
 
@@ -85,7 +102,7 @@ public class DefaultColumnDefinitions implements ColumnDefinitions {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     for (ColumnDefinition definition : definitions) {
       definition.attach(attachmentPoint);
     }
@@ -106,7 +123,8 @@ public class DefaultColumnDefinitions implements ColumnDefinitions {
     return new SerializationProxy(this);
   }
 
-  private void readObject(ObjectInputStream stream) throws InvalidObjectException {
+  private void readObject(@SuppressWarnings("unused") ObjectInputStream stream)
+      throws InvalidObjectException {
     // Should never be called since we serialized a proxy
     throw new InvalidObjectException("Proxy required");
   }

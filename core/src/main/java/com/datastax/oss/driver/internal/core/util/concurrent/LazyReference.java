@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,15 +17,17 @@ package com.datastax.oss.driver.internal.core.util.concurrent;
 
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
+import net.jcip.annotations.ThreadSafe;
 
 /** Holds a reference to an object that is initialized on first access. */
+@ThreadSafe
 public class LazyReference<T> {
 
   private final String name;
   private final Supplier<T> supplier;
   private final CycleDetector checker;
   private volatile T value;
-  private ReentrantLock lock = new ReentrantLock();
+  private final ReentrantLock lock = new ReentrantLock();
 
   public LazyReference(String name, Supplier<T> supplier, CycleDetector cycleDetector) {
     this.name = name;
@@ -33,19 +35,29 @@ public class LazyReference<T> {
     this.checker = cycleDetector;
   }
 
+  public LazyReference(Supplier<T> supplier) {
+    this(null, supplier, null);
+  }
+
   public T get() {
     T t = value;
     if (t == null) {
-      checker.onTryLock(this);
+      if (checker != null) {
+        checker.onTryLock(this);
+      }
       lock.lock();
       try {
-        checker.onLockAcquired(this);
+        if (checker != null) {
+          checker.onLockAcquired(this);
+        }
         t = value;
         if (t == null) {
           value = t = supplier.get();
         }
       } finally {
-        checker.onReleaseLock(this);
+        if (checker != null) {
+          checker.onReleaseLock(this);
+        }
         lock.unlock();
       }
     }

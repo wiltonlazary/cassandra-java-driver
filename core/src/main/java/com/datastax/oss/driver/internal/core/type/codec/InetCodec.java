@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,38 +22,46 @@ import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import com.datastax.oss.driver.internal.core.util.Strings;
 import com.datastax.oss.protocol.internal.util.Bytes;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class InetCodec implements TypeCodec<InetAddress> {
+  @NonNull
   @Override
   public GenericType<InetAddress> getJavaType() {
     return GenericType.INET_ADDRESS;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return DataTypes.INET;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return value instanceof InetAddress;
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
-    return InetAddress.class.isAssignableFrom(javaClass);
+  public boolean accepts(@NonNull Class<?> javaClass) {
+    return InetAddress.class.equals(javaClass);
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(InetAddress value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(@Nullable InetAddress value, @NonNull ProtocolVersion protocolVersion) {
     return (value == null) ? null : ByteBuffer.wrap(value.getAddress());
   }
 
+  @Nullable
   @Override
-  public InetAddress decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public InetAddress decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return null;
     }
@@ -65,13 +73,15 @@ public class InetCodec implements TypeCodec<InetAddress> {
     }
   }
 
+  @NonNull
   @Override
-  public String format(InetAddress value) {
+  public String format(@Nullable InetAddress value) {
     return (value == null) ? "NULL" : ("'" + value.getHostAddress() + "'");
   }
 
+  @Nullable
   @Override
-  public InetAddress parse(String value) {
+  public InetAddress parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) {
       return null;
     }

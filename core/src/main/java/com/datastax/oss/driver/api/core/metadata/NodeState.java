@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,25 +30,17 @@ public enum NodeState {
    */
   UNKNOWN,
   /**
-   * A node is considered up in either of the following situations:
-   *
-   * <ul>
-   *   <li>the driver has at least one active connection to the node.
-   *   <li>the driver is not actively trying to connect to the node (because it's ignored by the
-   *       {@link LoadBalancingPolicy}), but it has received a topology event indicating that the
-   *       node is up.
-   * </ul>
+   * A node is considered up in either of the following situations: 1) the driver has at least one
+   * active connection to the node, or 2) the driver is not actively trying to connect to the node
+   * (because it's ignored by the {@link LoadBalancingPolicy}), but it has received a topology event
+   * indicating that the node is up.
    */
   UP,
   /**
-   * A node is considered down in either of the following situations:
-   *
-   * <ul>
-   *   <li>the driver has lost all connections to the node (and is currently trying to reconnect).
-   *   <li>the driver is not actively trying to connect to the node (because it's ignored by the
-   *       {@link LoadBalancingPolicy}), but it has received a topology event indicating that the
-   *       node is down.
-   * </ul>
+   * A node is considered down in either of the following situations: 1) the driver has lost all
+   * connections to the node (and is currently trying to reconnect), or 2) the driver is not
+   * actively trying to connect to the node (because it's ignored by the {@link
+   * LoadBalancingPolicy}), but it has received a topology event indicating that the node is down.
    */
   DOWN,
   /**

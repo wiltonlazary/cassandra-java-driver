@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.data.Data;
 import com.datastax.oss.driver.api.core.type.TupleType;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Defines the contract of an object that can be detached and reattached to a driver instance.
@@ -32,10 +33,10 @@ import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
  * type).
  *
  * <ul>
- *   <li> When a data container was obtained from a driver instance (for example, reading a row from
+ *   <li>When a data container was obtained from a driver instance (for example, reading a row from
  *       a result set, or reading a value from a UDT column), it is <em>attached</em>: its protocol
  *       version and registry are those of the driver.
- *   <li> When it is created manually by the user (for example, creating an instance from a manually
+ *   <li>When it is created manually by the user (for example, creating an instance from a manually
  *       created {@link TupleType}), it is <em>detached</em>: it uses {@link
  *       ProtocolVersion#DEFAULT} and {@link CodecRegistry#DEFAULT}.
  * </ul>
@@ -50,5 +51,5 @@ import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
 public interface Detachable {
   boolean isDetached();
 
-  void attach(AttachmentPoint attachmentPoint);
+  void attach(@NonNull AttachmentPoint attachmentPoint);
 }

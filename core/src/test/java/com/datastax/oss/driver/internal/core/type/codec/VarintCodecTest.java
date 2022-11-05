@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,12 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import java.math.BigInteger;
 import org.junit.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 public class VarintCodecTest extends CodecTestBase<BigInteger> {
 
@@ -60,5 +61,23 @@ public class VarintCodecTest extends CodecTestBase<BigInteger> {
   @Test(expected = IllegalArgumentException.class)
   public void should_fail_to_parse_invalid_input() {
     parse("not a varint");
+  }
+
+  @Test
+  public void should_accept_generic_type() {
+    assertThat(codec.accepts(GenericType.of(BigInteger.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(Integer.class))).isFalse();
+  }
+
+  @Test
+  public void should_accept_raw_type() {
+    assertThat(codec.accepts(BigInteger.class)).isTrue();
+    assertThat(codec.accepts(Integer.class)).isFalse();
+  }
+
+  @Test
+  public void should_accept_object() {
+    assertThat(codec.accepts(BigInteger.ONE)).isTrue();
+    assertThat(codec.accepts(Integer.MIN_VALUE)).isFalse();
   }
 }

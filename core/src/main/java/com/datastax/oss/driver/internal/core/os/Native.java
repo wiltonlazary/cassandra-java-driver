@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,6 @@
  */
 package com.datastax.oss.driver.internal.core.os;
 
-import jnr.ffi.LibraryLoader;
-import jnr.ffi.Pointer;
-import jnr.ffi.Runtime;
-import jnr.ffi.Struct;
-import jnr.ffi.annotations.Out;
-import jnr.ffi.annotations.Transient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,65 +23,72 @@ public class Native {
 
   private static final Logger LOG = LoggerFactory.getLogger(Native.class);
 
-  /** Handles libc calls through JNR (must be public). */
-  public interface LibC {
-    int gettimeofday(@Out @Transient Timeval tv, Pointer unused);
-  }
+  private static class LibcLoader {
 
-  // See http://man7.org/linux/man-pages/man2/settimeofday.2.html
-  private static class Timeval extends Struct {
-    private final time_t tv_sec = new time_t();
-    private final Unsigned32 tv_usec = new Unsigned32();
+    /* These values come from Graal's imageinfo API which aims to offer the ability to detect
+     * when we're in the Graal build/run time via system props.  The maintainers of Graal have
+     * agreed that this API will not change over time.  We reference these props as literals
+     * to avoid introducing a dependency on Graal code for non-Graal users here. */
+    private static final String GRAAL_STATUS_PROP = "org.graalvm.nativeimage.imagecode";
+    private static final String GRAAL_BUILDTIME_STATUS = "buildtime";
+    private static final String GRAAL_RUNTIME_STATUS = "runtime";
 
-    private Timeval(Runtime runtime) {
-      super(runtime);
-    }
-  }
-
-  private static final LibC LIB_C;
-  private static final Runtime LIB_C_RUNTIME;
-
-  /** Whether {@link Native#currentTimeMicros()} is available on this system. */
-  public static final boolean CURRENT_TIME_MICROS_AVAILABLE;
-
-  static {
-    LibC libc;
-    Runtime runtime = null;
-    try {
-      libc = LibraryLoader.create(LibC.class).load("c");
-      runtime = Runtime.getRuntime(libc);
-    } catch (Throwable t) {
-      libc = null;
-      LOG.debug("Error loading libc", t);
-    }
-    LIB_C = libc;
-    LIB_C_RUNTIME = runtime;
-    boolean gettimeofday = false;
-    if (LIB_C_RUNTIME != null) {
+    public Libc load() {
       try {
-        gettimeofday = LIB_C.gettimeofday(new Timeval(LIB_C_RUNTIME), null) == 0;
+        if (isGraal()) {
+          LOG.info("Using Graal-specific native functions");
+          return new GraalLibc();
+        }
+        return new JnrLibc();
       } catch (Throwable t) {
-        LOG.debug("Error accessing libc.gettimeofday()", t);
+        LOG.info(
+            "Unable to load JNR native implementation. This could be normal if JNR is excluded from the classpath",
+            t);
+        return new EmptyLibc();
       }
     }
-    CURRENT_TIME_MICROS_AVAILABLE = gettimeofday;
+
+    private boolean isGraal() {
+
+      String val = System.getProperty(GRAAL_STATUS_PROP);
+      return val != null
+          && (val.equals(GRAAL_RUNTIME_STATUS) || val.equalsIgnoreCase(GRAAL_BUILDTIME_STATUS));
+    }
+  }
+
+  private static final Libc LIBC = new LibcLoader().load();
+  private static final CpuInfo.Cpu CPU = CpuInfo.determineCpu();
+
+  private static final String NATIVE_CALL_ERR_MSG = "Native call failed or was not available";
+
+  /** Whether {@link Native#currentTimeMicros()} is available on this system. */
+  public static boolean isCurrentTimeMicrosAvailable() {
+    return LIBC.available();
   }
 
   /**
    * The current time in microseconds, as returned by libc.gettimeofday(); can only be used if
-   * {@link #CURRENT_TIME_MICROS_AVAILABLE} is true.
+   * {@link #isCurrentTimeMicrosAvailable()} is true.
    */
   public static long currentTimeMicros() {
-    if (!CURRENT_TIME_MICROS_AVAILABLE) {
-      throw new IllegalStateException(
-          "Native call not available. "
-              + "Check CURRENT_TIME_MICROS_AVAILABLE before calling this method.");
-    }
-    Timeval tv = new Timeval(LIB_C_RUNTIME);
-    int res = LIB_C.gettimeofday(tv, null);
-    if (res != 0) {
-      throw new IllegalStateException("Call to libc.gettimeofday() failed with result " + res);
-    }
-    return tv.tv_sec.get() * 1000000 + tv.tv_usec.get();
+    return LIBC.gettimeofday().orElseThrow(() -> new IllegalStateException(NATIVE_CALL_ERR_MSG));
+  }
+
+  public static boolean isGetProcessIdAvailable() {
+    return LIBC.available();
+  }
+
+  public static int getProcessId() {
+    return LIBC.getpid().orElseThrow(() -> new IllegalStateException(NATIVE_CALL_ERR_MSG));
+  }
+
+  /**
+   * Returns the current processor architecture the JVM is running on. This value should match up to
+   * what's returned by jnr-ffi's Platform.getCPU() method.
+   *
+   * @return the current processor architecture.
+   */
+  public static String getCpu() {
+    return CPU.toString();
   }
 }

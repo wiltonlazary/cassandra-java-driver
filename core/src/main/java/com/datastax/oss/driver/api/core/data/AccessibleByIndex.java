@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package com.datastax.oss.driver.api.core.data;
 
 import com.datastax.oss.driver.api.core.type.DataType;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /** A data structure where the values are accessible via an integer index. */
 public interface AccessibleByIndex extends Data {
@@ -28,5 +29,6 @@ public interface AccessibleByIndex extends Data {
    *
    * @throws IndexOutOfBoundsException if the index is invalid.
    */
+  @NonNull
   DataType getType(int i);
 }

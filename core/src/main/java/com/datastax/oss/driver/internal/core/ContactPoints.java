@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 package com.datastax.oss.driver.internal.core;
 
-import com.google.common.base.Splitter;
-import com.google.common.collect.Sets;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import com.datastax.oss.driver.internal.core.metadata.DefaultEndPoint;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableSet;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
@@ -32,54 +34,58 @@ import org.slf4j.LoggerFactory;
 public class ContactPoints {
   private static final Logger LOG = LoggerFactory.getLogger(ContactPoints.class);
 
-  public static Set<InetSocketAddress> merge(
-      Set<InetSocketAddress> programmaticContactPoints, List<String> configContactPoints) {
+  public static Set<EndPoint> merge(
+      Set<EndPoint> programmaticContactPoints, List<String> configContactPoints, boolean resolve) {
 
-    Set<InetSocketAddress> result = Sets.newHashSet(programmaticContactPoints);
+    Set<EndPoint> result = Sets.newHashSet(programmaticContactPoints);
     for (String spec : configContactPoints) {
-      for (InetSocketAddress address : extract(spec)) {
-        boolean wasNew = result.add(address);
+      for (InetSocketAddress address : extract(spec, resolve)) {
+        DefaultEndPoint endPoint = new DefaultEndPoint(address);
+        boolean wasNew = result.add(endPoint);
         if (!wasNew) {
           LOG.warn("Duplicate contact point {}", address);
         }
       }
     }
-    return result;
+    return ImmutableSet.copyOf(result);
   }
 
-  private static Set<InetSocketAddress> extract(String spec) {
-    List<String> hostAndPort = Splitter.on(":").splitToList(spec);
-    if (hostAndPort.size() != 2) {
+  private static Set<InetSocketAddress> extract(String spec, boolean resolve) {
+    int separator = spec.lastIndexOf(':');
+    if (separator < 0) {
       LOG.warn("Ignoring invalid contact point {} (expecting host:port)", spec);
       return Collections.emptySet();
     }
-    String host = hostAndPort.get(0);
+
+    String host = spec.substring(0, separator);
+    String portSpec = spec.substring(separator + 1);
     int port;
     try {
-      port = Integer.parseInt(hostAndPort.get(1));
+      port = Integer.parseInt(portSpec);
     } catch (NumberFormatException e) {
-      LOG.warn(
-          "Ignoring invalid contact point {} (expecting a number, got {})",
-          spec,
-          hostAndPort.get(1));
+      LOG.warn("Ignoring invalid contact point {} (expecting a number, got {})", spec, portSpec);
       return Collections.emptySet();
     }
-    try {
-      InetAddress[] inetAddresses = InetAddress.getAllByName(host);
-      if (inetAddresses.length > 1) {
-        LOG.info(
-            "Contact point {} resolves to multiple addresses, will use them all ({})",
-            spec,
-            Arrays.deepToString(inetAddresses));
+    if (!resolve) {
+      return ImmutableSet.of(InetSocketAddress.createUnresolved(host, port));
+    } else {
+      try {
+        InetAddress[] inetAddresses = InetAddress.getAllByName(host);
+        if (inetAddresses.length > 1) {
+          LOG.info(
+              "Contact point {} resolves to multiple addresses, will use them all ({})",
+              spec,
+              Arrays.deepToString(inetAddresses));
+        }
+        Set<InetSocketAddress> result = new HashSet<>();
+        for (InetAddress inetAddress : inetAddresses) {
+          result.add(new InetSocketAddress(inetAddress, port));
+        }
+        return result;
+      } catch (UnknownHostException e) {
+        LOG.warn("Ignoring invalid contact point {} (unknown host {})", spec, host);
+        return Collections.emptySet();
       }
-      Set<InetSocketAddress> result = new HashSet<>();
-      for (InetAddress inetAddress : inetAddresses) {
-        result.add(new InetSocketAddress(inetAddress, port));
-      }
-      return result;
-    } catch (UnknownHostException e) {
-      LOG.warn("Ignoring invalid contact point {} (unknown host {})", spec, host);
-      return Collections.emptySet();
     }
   }
 }

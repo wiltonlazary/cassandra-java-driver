@@ -1,5 +1,15 @@
 ## Batch statements
 
+### Quick overview
+
+Group a set of statements into an atomic operation.
+
+* create with [BatchStatement.newInstance()] or [BatchStatement.builder()].
+* built-in implementation is **immutable**. Setters always return a new object, don't ignore the
+  result.
+
+-----
+
 Use [BatchStatement] to execute a set of queries as an atomic operation (refer to 
 [Batching inserts, updates and deletes][batch_dse] to understand how to use batching effectively):
 
@@ -15,7 +25,7 @@ SimpleStatement simpleInsertBalance =
 
 BatchStatement batch =
   BatchStatement.newInstance(
-      BatchType.LOGGED,
+      DefaultBatchType.LOGGED,
       simpleInsertBalance,
       preparedInsertExpense.bind("Vera ADRIAN", 1, 7.95f, "Breakfast", false));
 
@@ -27,20 +37,20 @@ builder:
 
 ```java
 BatchStatement batch =
-    BatchStatement.builder(BatchType.LOGGED)
+    BatchStatement.builder(DefaultBatchType.LOGGED)
         .addStatement(simpleInsertBalance)
         .addStatement(preparedInsertExpense.bind("Vera ADRIAN", 1, 7.95f, "Breakfast", false))
         .build();
 ```
 
-Keep in mind that batch statements are immutable, and every method returns a different instance:
+Keep in mind that batch statements are **immutable**, and every method returns a different instance:
 
 ```java
 // Won't work: the object is not modified in place:
-batch.setConfigProfileName("oltp");
+batch.setExecutionProfileName("oltp");
 
-// Do this instead:
-batch = batch.setConfigProfileName("oltp");
+// Instead, reassign the statement every time:
+batch = batch.setExecutionProfileName("oltp");
 ```
 
 As shown in the examples above, batches can contain any combination of simple statements and bound 
@@ -51,6 +61,8 @@ In addition, simple statements with named parameters are currently not supported
 due to a [protocol limitation][CASSANDRA-10246] that will be fixed in a future version). If you try
 to execute such a batch, an `IllegalArgumentException` is thrown.
 
-[BatchStatement]: http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/cql/BatchStatement.html
-[batch_dse]: http://docs.datastax.com/en/dse/5.1/cql/cql/cql_using/useBatch.html
+[BatchStatement]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/BatchStatement.html
+[BatchStatement.newInstance()]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/BatchStatement.html#newInstance-com.datastax.oss.driver.api.core.cql.BatchType-
+[BatchStatement.builder()]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/BatchStatement.html#builder-com.datastax.oss.driver.api.core.cql.BatchType-
+[batch_dse]: http://docs.datastax.com/en/dse/6.7/cql/cql/cql_using/useBatch.html
 [CASSANDRA-10246]: https://issues.apache.org/jira/browse/CASSANDRA-10246

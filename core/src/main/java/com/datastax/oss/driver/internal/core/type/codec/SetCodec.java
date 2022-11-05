@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,37 +20,43 @@ import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.SetType;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Sets;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import net.jcip.annotations.ThreadSafe;
 
-public class SetCodec<T> implements TypeCodec<Set<T>> {
+@ThreadSafe
+public class SetCodec<ElementT> implements TypeCodec<Set<ElementT>> {
 
   private final DataType cqlType;
-  private final GenericType<Set<T>> javaType;
-  private final TypeCodec<T> elementCodec;
+  private final GenericType<Set<ElementT>> javaType;
+  private final TypeCodec<ElementT> elementCodec;
 
-  public SetCodec(DataType cqlType, TypeCodec<T> elementCodec) {
+  public SetCodec(DataType cqlType, TypeCodec<ElementT> elementCodec) {
     this.cqlType = cqlType;
     this.javaType = GenericType.setOf(elementCodec.getJavaType());
     this.elementCodec = elementCodec;
     Preconditions.checkArgument(cqlType instanceof SetType);
   }
 
+  @NonNull
   @Override
-  public GenericType<Set<T>> getJavaType() {
+  public GenericType<Set<ElementT>> getJavaType() {
     return javaType;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return cqlType;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     if (Set.class.isAssignableFrom(value.getClass())) {
       // runtime type ok, now check element type
       Set<?> set = (Set<?>) value;
@@ -60,8 +66,10 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
     }
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(Set<T> value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(
+      @Nullable Set<ElementT> value, @NonNull ProtocolVersion protocolVersion) {
     // An int indicating the number of elements in the set, followed by the elements. Each element
     // is a byte array representing the serialized value, preceded by an int indicating its size.
     if (value == null) {
@@ -70,7 +78,7 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
       int i = 0;
       ByteBuffer[] encodedElements = new ByteBuffer[value.size()];
       int toAllocate = 4; // initialize with number of elements
-      for (T element : value) {
+      for (ElementT element : value) {
         if (element == null) {
           throw new NullPointerException("Collection elements cannot be null");
         }
@@ -79,6 +87,9 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
           encodedElement = elementCodec.encode(element, protocolVersion);
         } catch (ClassCastException e) {
           throw new IllegalArgumentException("Invalid type for element: " + element.getClass());
+        }
+        if (encodedElement == null) {
+          throw new NullPointerException("Collection elements cannot encode to CQL NULL");
         }
         encodedElements[i++] = encodedElement;
         toAllocate += 4 + encodedElement.remaining(); // the element preceded by its size
@@ -94,33 +105,44 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
     }
   }
 
+  @Nullable
   @Override
-  public Set<T> decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public Set<ElementT> decode(
+      @Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return new LinkedHashSet<>(0);
     } else {
       ByteBuffer input = bytes.duplicate();
       int size = input.getInt();
-      Set<T> result = Sets.newLinkedHashSetWithExpectedSize(size);
+      Set<ElementT> result = Sets.newLinkedHashSetWithExpectedSize(size);
       for (int i = 0; i < size; i++) {
+        ElementT element;
         int elementSize = input.getInt();
-        ByteBuffer encodedElement = input.slice();
-        encodedElement.limit(elementSize);
-        input.position(input.position() + elementSize);
-        result.add(elementCodec.decode(encodedElement, protocolVersion));
+        // Allow null elements on the decode path, because Cassandra might return such collections
+        // for some computed values in the future -- e.g. SELECT ttl(some_collection)
+        if (elementSize < 0) {
+          element = null;
+        } else {
+          ByteBuffer encodedElement = input.slice();
+          encodedElement.limit(elementSize);
+          element = elementCodec.decode(encodedElement, protocolVersion);
+          input.position(input.position() + elementSize);
+        }
+        result.add(element);
       }
       return result;
     }
   }
 
+  @NonNull
   @Override
-  public String format(Set<T> value) {
+  public String format(@Nullable Set<ElementT> value) {
     if (value == null) {
       return "NULL";
     }
     StringBuilder sb = new StringBuilder("{");
     boolean first = true;
-    for (T t : value) {
+    for (ElementT t : value) {
       if (first) {
         first = false;
       } else {
@@ -132,8 +154,9 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
     return sb.toString();
   }
 
+  @Nullable
   @Override
-  public Set<T> parse(String value) {
+  public Set<ElementT> parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) return null;
 
     int idx = ParseUtils.skipSpaces(value, 0);
@@ -149,7 +172,7 @@ public class SetCodec<T> implements TypeCodec<Set<T>> {
       return new LinkedHashSet<>(0);
     }
 
-    Set<T> set = new LinkedHashSet<>();
+    Set<ElementT> set = new LinkedHashSet<>();
     while (idx < value.length()) {
       int n;
       try {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package com.datastax.oss.driver.api.core;
 
 import com.datastax.oss.driver.internal.core.util.concurrent.BlockingOperation;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -31,7 +32,17 @@ public interface AsyncAutoCloseable extends AutoCloseable {
    * Returns a stage that will complete when {@link #close()} or {@link #forceCloseAsync()} is
    * called, and the shutdown sequence completes.
    */
+  @NonNull
   CompletionStage<Void> closeFuture();
+
+  /**
+   * Whether shutdown has completed.
+   *
+   * <p>This is a shortcut for {@code closeFuture().toCompletableFuture().isDone()}.
+   */
+  default boolean isClosed() {
+    return closeFuture().toCompletableFuture().isDone();
+  }
 
   /**
    * Initiates an orderly shutdown: no new requests are accepted, but all pending requests are
@@ -40,6 +51,7 @@ public interface AsyncAutoCloseable extends AutoCloseable {
    * @return a stage that will complete when the shutdown sequence is complete. Multiple calls to
    *     this method or {@link #forceCloseAsync()} always return the same instance.
    */
+  @NonNull
   CompletionStage<Void> closeAsync();
 
   /**
@@ -49,6 +61,7 @@ public interface AsyncAutoCloseable extends AutoCloseable {
    * @return a stage that will complete when the shutdown sequence is complete. Multiple calls to
    *     this method or {@link #close()} always return the same instance.
    */
+  @NonNull
   CompletionStage<Void> forceCloseAsync();
 
   /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,29 @@ package com.datastax.oss.driver.api.core.cql;
 import com.datastax.oss.driver.api.core.CqlIdentifier;
 import com.datastax.oss.driver.api.core.data.AccessibleByName;
 import com.datastax.oss.driver.api.core.detach.Detachable;
-import java.io.Serializable;
+import com.datastax.oss.driver.internal.core.util.Loggers;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import java.util.Collections;
+import java.util.List;
 
-/** Metadata about a set of CQL columns. */
-public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachable, Serializable {
+/**
+ * Metadata about a set of CQL columns.
+ *
+ * <p>The default implementation returned by the driver is immutable and serializable. If you write
+ * your own implementation, it should at least be thread-safe; serializability is not mandatory, but
+ * recommended for use with some 3rd-party tools like Apache Spark &trade;.
+ */
+public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachable {
+
+  /** @return the number of definitions contained in this metadata. */
   int size();
 
+  /**
+   * @param i the index to check.
+   * @throws IndexOutOfBoundsException if the index is invalid.
+   * @return the {@code i}th {@link ColumnDefinition} in this metadata.
+   */
+  @NonNull
   ColumnDefinition get(int i);
 
   /**
@@ -40,7 +57,8 @@ public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachabl
    * @see #contains(String)
    * @see #firstIndexOf(String)
    */
-  default ColumnDefinition get(String name) {
+  @NonNull
+  default ColumnDefinition get(@NonNull String name) {
     if (!contains(name)) {
       throw new IllegalArgumentException("No definition named " + name);
     } else {
@@ -62,7 +80,8 @@ public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachabl
    * @see #contains(CqlIdentifier)
    * @see #firstIndexOf(CqlIdentifier)
    */
-  default ColumnDefinition get(CqlIdentifier name) {
+  @NonNull
+  default ColumnDefinition get(@NonNull CqlIdentifier name) {
     if (!contains(name)) {
       throw new IllegalArgumentException("No definition named " + name);
     } else {
@@ -76,10 +95,32 @@ public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachabl
    * <p>Because raw strings are ambiguous with regard to case-sensitivity, the argument will be
    * interpreted according to the rules described in {@link AccessibleByName}.
    */
-  boolean contains(String name);
+  boolean contains(@NonNull String name);
 
   /** Whether there is a definition using the given CQL identifier. */
-  boolean contains(CqlIdentifier id);
+  boolean contains(@NonNull CqlIdentifier id);
+
+  /**
+   * Returns the indices of all columns that use the given name.
+   *
+   * <p>Because raw strings are ambiguous with regard to case-sensitivity, the argument will be
+   * interpreted according to the rules described in {@link AccessibleByName}.
+   *
+   * @return the indices, or an empty list if no column uses this name.
+   * @apiNote the default implementation only exists for backward compatibility. It wraps the result
+   *     of {@link #firstIndexOf(String)} in a singleton list, which is not entirely correct, as it
+   *     will only return the first occurrence. Therefore it also logs a warning.
+   *     <p>Implementors should always override this method (all built-in driver implementations
+   *     do).
+   */
+  @NonNull
+  default List<Integer> allIndicesOf(@NonNull String name) {
+    Loggers.COLUMN_DEFINITIONS.warn(
+        "{} should override allIndicesOf(String), the default implementation is a "
+            + "workaround for backward compatibility, it only returns the first occurrence",
+        getClass().getName());
+    return Collections.singletonList(firstIndexOf(name));
+  }
 
   /**
    * Returns the index of the first column that uses the given name.
@@ -87,16 +128,33 @@ public interface ColumnDefinitions extends Iterable<ColumnDefinition>, Detachabl
    * <p>Because raw strings are ambiguous with regard to case-sensitivity, the argument will be
    * interpreted according to the rules described in {@link AccessibleByName}.
    *
-   * <p>Also, note that if multiple columns use the same name, there is no way to find the index for
-   * the next occurrences. One way to avoid this is to use aliases in your CQL queries.
+   * @return the index, or -1 if no column uses this name.
    */
-  int firstIndexOf(String name);
+  int firstIndexOf(@NonNull String name);
+
+  /**
+   * Returns the indices of all columns that use the given identifier.
+   *
+   * @return the indices, or an empty list if no column uses this identifier.
+   * @apiNote the default implementation only exists for backward compatibility. It wraps the result
+   *     of {@link #firstIndexOf(CqlIdentifier)} in a singleton list, which is not entirely correct,
+   *     as it will only return the first occurrence. Therefore it also logs a warning.
+   *     <p>Implementors should always override this method (all built-in driver implementations
+   *     do).
+   */
+  @NonNull
+  default List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    Loggers.COLUMN_DEFINITIONS.warn(
+        "{} should override allIndicesOf(CqlIdentifier), the default implementation is a "
+            + "workaround for backward compatibility, it only returns the first occurrence",
+        getClass().getName());
+    return Collections.singletonList(firstIndexOf(id));
+  }
 
   /**
    * Returns the index of the first column that uses the given identifier.
    *
-   * <p>Note that if multiple columns use the same identifier, there is no way to find the index for
-   * the next occurrences. One way to avoid this is to use aliases in your CQL queries.
+   * @return the index, or -1 if no column uses this identifier.
    */
-  int firstIndexOf(CqlIdentifier id);
+  int firstIndexOf(@NonNull CqlIdentifier id);
 }

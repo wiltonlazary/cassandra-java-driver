@@ -1,5 +1,17 @@
 ## Simple statements
 
+### Quick overview
+
+For one-off executions of a raw query string.
+
+* create with [SimpleStatement.newInstance()] or [SimpleStatement.builder()].
+* values: `?` or `:name`, fill with `setPositionalValues()` or `setNamedValues()` respectively.
+  Driver has to guess target CQL types, this can lead to ambiguities.
+* built-in implementation is **immutable**. Setters always return a new object, don't ignore the
+  result.
+
+-----
+
 Use [SimpleStatement] for queries that will be executed only once (or just a few times):
 
 ```java
@@ -46,14 +58,14 @@ SimpleStatement statement =
 ```
 
 You can then use setter methods to configure additional options. Note that, like all statement
-implementations, simple statements are immutable, so these methods return a new instance each time.
-Make sure you don't ignore the result: 
+implementations, simple statements are **immutable**, so these methods return a new instance each
+time. Make sure you don't ignore the result:
 
 ```java
 // WRONG: ignores the result
 statement.setIdempotent(true);
 
-// Do this instead:
+// Instead, reassign the statement every time:
 statement = statement.setIdempotent(true);
 ```
 
@@ -62,7 +74,7 @@ If you have many options to set, you can use a builder to avoid creating interme
 ```java
 SimpleStatement statement =
     SimpleStatement.builder("SELECT value FROM application_params WHERE name = 'greeting_message'")
-        .withIdempotence(true)
+        .setIdempotence(true)
         .build();
 ```
 
@@ -157,9 +169,9 @@ In that situation, there is no way to hint at the correct type. Fortunately, you
 value manually as a workaround: 
 
 ```java
-TypeCodec<Object> codec = cluster.getContext().codecRegistry().codecFor(DataTypes.ASCII);
+TypeCodec<Object> codec = session.getContext().getCodecRegistry().codecFor(DataTypes.ASCII);
 ByteBuffer bytes =
-    codec.encode("Touché sir, touché...", cluster.getContext().protocolVersion());
+    codec.encode("Touché sir, touché...", session.getContext().getProtocolVersion());
 
 session.execute(
     SimpleStatement.builder("INSERT INTO ascii_quotes (id, t) VALUES (?, ?)")
@@ -170,4 +182,6 @@ session.execute(
 Or you could also use [prepared statements](../prepared/), which don't have this limitation since
 parameter types are known in advance. 
 
-[SimpleStatement]: http://docs.datastax.com/en/drivers/java/4.0/com/datastax/oss/driver/api/core/cql/SimpleStatement.html
+[SimpleStatement]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/SimpleStatement.html
+[SimpleStatement.newInstance()]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/SimpleStatement.html#newInstance-java.lang.String-
+[SimpleStatement.builder()]: https://docs.datastax.com/en/drivers/java/4.14/com/datastax/oss/driver/api/core/cql/SimpleStatement.html#builder-java.lang.String-

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,12 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.driver.api.core.data.CqlDuration;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import org.junit.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 public class CqlDurationCodecTest extends CodecTestBase<CqlDuration> {
 
@@ -71,5 +72,23 @@ public class CqlDurationCodecTest extends CodecTestBase<CqlDuration> {
   @Test(expected = IllegalArgumentException.class)
   public void should_fail_to_parse_invalid_input() {
     parse("not a duration");
+  }
+
+  @Test
+  public void should_accept_generic_type() {
+    assertThat(codec.accepts(GenericType.of(CqlDuration.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(Integer.class))).isFalse();
+  }
+
+  @Test
+  public void should_accept_raw_type() {
+    assertThat(codec.accepts(CqlDuration.class)).isTrue();
+    assertThat(codec.accepts(Integer.class)).isFalse();
+  }
+
+  @Test
+  public void should_accept_object() {
+    assertThat(codec.accepts(DURATION)).isTrue();
+    assertThat(codec.accepts(Integer.MIN_VALUE)).isFalse();
   }
 }

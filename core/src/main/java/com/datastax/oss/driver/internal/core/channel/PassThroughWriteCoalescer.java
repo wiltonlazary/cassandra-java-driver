@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,17 +15,16 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.config.DriverOption;
 import com.datastax.oss.driver.api.core.context.DriverContext;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import net.jcip.annotations.ThreadSafe;
 
 /** No-op implementation of the write coalescer: each write is flushed immediately. */
+@ThreadSafe
 public class PassThroughWriteCoalescer implements WriteCoalescer {
 
-  public PassThroughWriteCoalescer(
-      @SuppressWarnings("unused") DriverContext context,
-      @SuppressWarnings("unused") DriverOption configRoot) {
+  public PassThroughWriteCoalescer(@SuppressWarnings("unused") DriverContext context) {
     // nothing to do
   }
 

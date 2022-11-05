@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 package com.datastax.oss.driver.internal.core.type;
 
 import com.datastax.oss.driver.api.core.CqlIdentifier;
+import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.UserDefinedType;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import net.jcip.annotations.NotThreadSafe;
 
 /**
  * Helper class to build {@link UserDefinedType} instances.
@@ -28,18 +30,25 @@ import com.google.common.collect.ImmutableList;
  * you will insert corrupt data in your database. If you decide to use this class anyway, make sure
  * that you define fields in the correct order, and that the database schema never changes.
  */
+@NotThreadSafe
 public class UserDefinedTypeBuilder {
 
   private final CqlIdentifier keyspaceName;
   private final CqlIdentifier typeName;
+  private boolean frozen;
   private final ImmutableList.Builder<CqlIdentifier> fieldNames;
   private final ImmutableList.Builder<DataType> fieldTypes;
+  private AttachmentPoint attachmentPoint = AttachmentPoint.NONE;
 
   public UserDefinedTypeBuilder(CqlIdentifier keyspaceName, CqlIdentifier typeName) {
     this.keyspaceName = keyspaceName;
     this.typeName = typeName;
     this.fieldNames = ImmutableList.builder();
     this.fieldTypes = ImmutableList.builder();
+  }
+
+  public UserDefinedTypeBuilder(String keyspaceName, String typeName) {
+    this(CqlIdentifier.fromCql(keyspaceName), CqlIdentifier.fromCql(typeName));
   }
 
   /**
@@ -52,8 +61,23 @@ public class UserDefinedTypeBuilder {
     return this;
   }
 
+  public UserDefinedTypeBuilder withField(String name, DataType type) {
+    return withField(CqlIdentifier.fromCql(name), type);
+  }
+
+  /** Makes the type frozen (by default, it is not). */
+  public UserDefinedTypeBuilder frozen() {
+    this.frozen = true;
+    return this;
+  }
+
+  public UserDefinedTypeBuilder withAttachmentPoint(AttachmentPoint attachmentPoint) {
+    this.attachmentPoint = attachmentPoint;
+    return this;
+  }
+
   public UserDefinedType build() {
     return new DefaultUserDefinedType(
-        keyspaceName, typeName, fieldNames.build(), fieldTypes.build());
+        keyspaceName, typeName, frozen, fieldNames.build(), fieldTypes.build(), attachmentPoint);
   }
 }

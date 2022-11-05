@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,14 @@
  */
 package com.datastax.oss.driver.api.core.data;
 
+import com.datastax.oss.driver.api.core.metadata.token.Token;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.codec.CodecNotFoundException;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import edu.umd.cs.findbugs.annotations.CheckReturnValue;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.InetAddress;
@@ -32,11 +36,11 @@ import java.util.Set;
 import java.util.UUID;
 
 /** A data structure that provides methods to set its values via a name. */
-public interface SettableByName<T extends SettableByName<T>>
-    extends SettableByIndex<T>, AccessibleByName {
+public interface SettableByName<SelfT extends SettableByName<SelfT>>
+    extends SettableByIndex<SelfT>, AccessibleByName {
 
   /**
-   * Sets the raw binary representation of the value for the first occurrence of {@code name}.
+   * Sets the raw binary representation of the value for all occurrences of {@code name}.
    *
    * <p>This is primarily for internal use; you'll likely want to use one of the typed setters
    * instead, to pass a higher-level Java representation.
@@ -49,32 +53,46 @@ public interface SettableByName<T extends SettableByName<T>>
    *     to modify elsewhere in your application, make sure to {@link ByteBuffer#duplicate()
    *     duplicate} it beforehand. If you change the buffer's index or its contents in any way,
    *     further usage of this data will have unpredictable results.
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setBytesUnsafe(String name, ByteBuffer v) {
-    return setBytesUnsafe(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setBytesUnsafe(@NonNull String name, @Nullable ByteBuffer v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setBytesUnsafe(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
+  @NonNull
   @Override
-  default DataType getType(String name) {
+  default DataType getType(@NonNull String name) {
     return getType(firstIndexOf(name));
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to CQL {@code NULL}.
+   * Sets the value for all occurrences of {@code name} to CQL {@code NULL}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setToNull(String name) {
-    return setToNull(firstIndexOf(name));
+  @NonNull
+  @CheckReturnValue
+  default SelfT setToNull(@NonNull String name) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setToNull(i);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name}, using the given codec for the
-   * conversion.
+   * Sets the value for all occurrences of {@code name}, using the given codec for the conversion.
    *
    * <p>This method completely bypasses the {@link #codecRegistry()}, and forces the driver to use
    * the given codec instead. This can be useful if the codec would collide with a previously
@@ -86,33 +104,48 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default <V> T set(String name, V v, TypeCodec<V> codec) {
-    return set(firstIndexOf(name), v, codec);
+  @NonNull
+  @CheckReturnValue
+  default <ValueT> SelfT set(
+      @NonNull String name, @Nullable ValueT v, @NonNull TypeCodec<ValueT> codec) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).set(i, v, codec);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name}, converting it to the given Java type.
+   * Sets the value for all occurrences of {@code name}, converting it to the given Java type.
    *
    * <p>The {@link #codecRegistry()} will be used to look up a codec to handle the conversion.
    *
    * <p>This variant is for generic Java types. If the target type is not generic, use {@link
-   * #set(int, V, Class)} instead, which may perform slightly better.
+   * #set(int, Object, Class)} instead, which may perform slightly better.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    * @throws CodecNotFoundException if no codec can perform the conversion.
    */
-  default <V> T set(String name, V v, GenericType<V> targetType) {
-    return set(firstIndexOf(name), v, targetType);
+  @NonNull
+  @CheckReturnValue
+  default <ValueT> SelfT set(
+      @NonNull String name, @Nullable ValueT v, @NonNull GenericType<ValueT> targetType) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).set(i, v, targetType);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Returns the value for the first occurrence of {@code name}, converting it to the given Java
-   * type.
+   * Returns the value for all occurrences of {@code name}, converting it to the given Java type.
    *
    * <p>The {@link #codecRegistry()} will be used to look up a codec to handle the conversion.
    *
@@ -121,15 +154,23 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    * @throws CodecNotFoundException if no codec can perform the conversion.
    */
-  default <V> T set(String name, V v, Class<V> targetClass) {
-    return set(firstIndexOf(name), v, targetClass);
+  @NonNull
+  @CheckReturnValue
+  default <ValueT> SelfT set(
+      @NonNull String name, @Nullable ValueT v, @NonNull Class<ValueT> targetClass) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).set(i, v, targetClass);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive boolean.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive boolean.
    *
    * <p>By default, this works with CQL type {@code boolean}.
    *
@@ -139,14 +180,32 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setBoolean(String name, boolean v) {
-    return setBoolean(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setBoolean(@NonNull String name, boolean v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setBoolean(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive byte.
+   * @deprecated this method only exists to ease the transition from driver 3, it is an alias
+   *     for{@link #setBoolean(String, boolean)}.
+   */
+  @Deprecated
+  @NonNull
+  @CheckReturnValue
+  default SelfT setBool(@NonNull String name, boolean v) {
+    return setBoolean(name, v);
+  }
+
+  /**
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive byte.
    *
    * <p>By default, this works with CQL type {@code tinyint}.
    *
@@ -156,14 +215,21 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setByte(String name, byte v) {
-    return setByte(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setByte(@NonNull String name, byte v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setByte(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive double.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive double.
    *
    * <p>By default, this works with CQL type {@code double}.
    *
@@ -173,14 +239,21 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setDouble(String name, double v) {
-    return setDouble(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setDouble(@NonNull String name, double v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setDouble(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive float.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive float.
    *
    * <p>By default, this works with CQL type {@code float}.
    *
@@ -190,14 +263,21 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setFloat(String name, float v) {
-    return setFloat(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setFloat(@NonNull String name, float v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setFloat(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive integer.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive integer.
    *
    * <p>By default, this works with CQL type {@code int}.
    *
@@ -207,14 +287,21 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setInt(String name, int v) {
-    return setInt(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setInt(@NonNull String name, int v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setInt(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive long.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive long.
    *
    * <p>By default, this works with CQL types {@code bigint} and {@code counter}.
    *
@@ -224,14 +311,21 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setLong(String name, long v) {
-    return setLong(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setLong(@NonNull String name, long v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setLong(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java primitive short.
+   * Sets the value for all occurrences of {@code name} to the provided Java primitive short.
    *
    * <p>By default, this works with CQL type {@code smallint}.
    *
@@ -241,154 +335,254 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setShort(String name, short v) {
-    return setShort(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setShort(@NonNull String name, short v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setShort(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java instant.
+   * Sets the value for all occurrences of {@code name} to the provided Java instant.
    *
    * <p>By default, this works with CQL type {@code timestamp}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setInstant(String name, Instant v) {
-    return setInstant(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setInstant(@NonNull String name, @Nullable Instant v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setInstant(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java local date.
+   * Sets the value for all occurrences of {@code name} to the provided Java local date.
    *
    * <p>By default, this works with CQL type {@code date}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setLocalDate(String name, LocalDate v) {
-    return setLocalDate(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setLocalDate(@NonNull String name, @Nullable LocalDate v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setLocalDate(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java local time.
+   * Sets the value for all occurrences of {@code name} to the provided Java local time.
    *
    * <p>By default, this works with CQL type {@code time}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setLocalTime(String name, LocalTime v) {
-    return setLocalTime(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setLocalTime(@NonNull String name, @Nullable LocalTime v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setLocalTime(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java byte buffer.
+   * Sets the value for all occurrences of {@code name} to the provided Java byte buffer.
    *
    * <p>By default, this works with CQL type {@code blob}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setByteBuffer(String name, ByteBuffer v) {
-    return setByteBuffer(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setByteBuffer(@NonNull String name, @Nullable ByteBuffer v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setByteBuffer(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java string.
+   * Sets the value for all occurrences of {@code name} to the provided Java string.
    *
    * <p>By default, this works with CQL types {@code text}, {@code varchar} and {@code ascii}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setString(String name, String v) {
-    return setString(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setString(@NonNull String name, @Nullable String v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setString(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java big integer.
+   * Sets the value for all occurrences of {@code name} to the provided Java big integer.
    *
    * <p>By default, this works with CQL type {@code varint}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setBigInteger(String name, BigInteger v) {
-    return setBigInteger(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setBigInteger(@NonNull String name, @Nullable BigInteger v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setBigInteger(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java big decimal.
+   * Sets the value for all occurrences of {@code name} to the provided Java big decimal.
    *
    * <p>By default, this works with CQL type {@code decimal}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setBigDecimal(String name, BigDecimal v) {
-    return setBigDecimal(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setBigDecimal(@NonNull String name, @Nullable BigDecimal v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setBigDecimal(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java UUID.
+   * Sets the value for all occurrences of {@code name} to the provided Java UUID.
    *
    * <p>By default, this works with CQL types {@code uuid} and {@code timeuuid}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setUuid(String name, UUID v) {
-    return setUuid(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setUuid(@NonNull String name, @Nullable UUID v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setUuid(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java IP address.
+   * Sets the value for all occurrences of {@code name} to the provided Java IP address.
    *
    * <p>By default, this works with CQL type {@code inet}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setInetAddress(String name, InetAddress v) {
-    return setInetAddress(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setInetAddress(@NonNull String name, @Nullable InetAddress v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setInetAddress(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided duration.
+   * Sets the value for all occurrences of {@code name} to the provided duration.
    *
    * <p>By default, this works with CQL type {@code duration}.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setCqlDuration(String name, CqlDuration v) {
-    return setCqlDuration(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setCqlDuration(@NonNull String name, @Nullable CqlDuration v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setCqlDuration(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java list.
+   * Sets the value for all occurrences of {@code name} to the provided token.
+   *
+   * <p>This works with the CQL type matching the partitioner in use for this cluster: {@code
+   * bigint} for {@code Murmur3Partitioner}, {@code blob} for {@code ByteOrderedPartitioner}, and
+   * {@code varint} for {@code RandomPartitioner}.
+   *
+   * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
+   * AccessibleByName}.
+   *
+   * @throws IllegalArgumentException if the name is invalid.
+   */
+  @NonNull
+  @CheckReturnValue
+  default SelfT setToken(@NonNull String name, @NonNull Token v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setToken(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
+  }
+
+  /**
+   * Sets the value for all occurrences of {@code name} to the provided Java list.
    *
    * <p>By default, this works with CQL type {@code list}.
    *
@@ -398,14 +592,22 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default <V> T setList(String name, List<V> v, Class<V> elementsClass) {
-    return setList(firstIndexOf(name), v, elementsClass);
+  @NonNull
+  @CheckReturnValue
+  default <ElementT> SelfT setList(
+      @NonNull String name, @Nullable List<ElementT> v, @NonNull Class<ElementT> elementsClass) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setList(i, v, elementsClass);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java set.
+   * Sets the value for all occurrences of {@code name} to the provided Java set.
    *
    * <p>By default, this works with CQL type {@code set}.
    *
@@ -415,14 +617,22 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default <V> T setSet(String name, Set<V> v, Class<V> elementsClass) {
-    return setSet(firstIndexOf(name), v, elementsClass);
+  @NonNull
+  @CheckReturnValue
+  default <ElementT> SelfT setSet(
+      @NonNull String name, @Nullable Set<ElementT> v, @NonNull Class<ElementT> elementsClass) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setSet(i, v, elementsClass);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided Java map.
+   * Sets the value for all occurrences of {@code name} to the provided Java map.
    *
    * <p>By default, this works with CQL type {@code map}.
    *
@@ -432,38 +642,62 @@ public interface SettableByName<T extends SettableByName<T>>
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default <K, V> T setMap(String name, Map<K, V> v, Class<K> keyClass, Class<V> valueClass) {
-    return setMap(firstIndexOf(name), v, keyClass, valueClass);
+  @NonNull
+  @CheckReturnValue
+  default <KeyT, ValueT> SelfT setMap(
+      @NonNull String name,
+      @Nullable Map<KeyT, ValueT> v,
+      @NonNull Class<KeyT> keyClass,
+      @NonNull Class<ValueT> valueClass) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setMap(i, v, keyClass, valueClass);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided user defined type
-   * value.
+   * Sets the value for all occurrences of {@code name} to the provided user defined type value.
    *
    * <p>By default, this works with CQL user-defined types.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setUdtValue(String name, UdtValue v) {
-    return setUdtValue(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setUdtValue(@NonNull String name, @Nullable UdtValue v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setUdtValue(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 
   /**
-   * Sets the value for the first occurrence of {@code name} to the provided tuple value.
+   * Sets the value for all occurrences of {@code name} to the provided tuple value.
    *
    * <p>By default, this works with CQL tuples.
    *
    * <p>This method deals with case sensitivity in the way explained in the documentation of {@link
    * AccessibleByName}.
    *
-   * @throws IndexOutOfBoundsException if the name is invalid.
+   * @throws IllegalArgumentException if the name is invalid.
    */
-  default T setTupleValue(String name, TupleValue v) {
-    return setTupleValue(firstIndexOf(name), v);
+  @NonNull
+  @CheckReturnValue
+  default SelfT setTupleValue(@NonNull String name, @Nullable TupleValue v) {
+    SelfT result = null;
+    for (Integer i : allIndicesOf(name)) {
+      result = (result == null ? this : result).setTupleValue(i, v);
+    }
+    assert result != null; // allIndices throws if there are no results
+    return result;
   }
 }

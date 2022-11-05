@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,36 +20,42 @@ import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.ListType;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
-import com.google.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import net.jcip.annotations.ThreadSafe;
 
-public class ListCodec<T> implements TypeCodec<List<T>> {
+@ThreadSafe
+public class ListCodec<ElementT> implements TypeCodec<List<ElementT>> {
 
   private final DataType cqlType;
-  private final GenericType<List<T>> javaType;
-  private final TypeCodec<T> elementCodec;
+  private final GenericType<List<ElementT>> javaType;
+  private final TypeCodec<ElementT> elementCodec;
 
-  public ListCodec(DataType cqlType, TypeCodec<T> elementCodec) {
+  public ListCodec(DataType cqlType, TypeCodec<ElementT> elementCodec) {
     this.cqlType = cqlType;
     this.javaType = GenericType.listOf(elementCodec.getJavaType());
     this.elementCodec = elementCodec;
     Preconditions.checkArgument(cqlType instanceof ListType);
   }
 
+  @NonNull
   @Override
-  public GenericType<List<T>> getJavaType() {
+  public GenericType<List<ElementT>> getJavaType() {
     return javaType;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return cqlType;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     if (List.class.isAssignableFrom(value.getClass())) {
       // runtime type ok, now check element type
       List<?> list = (List<?>) value;
@@ -59,8 +65,10 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
     }
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(List<T> value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(
+      @Nullable List<ElementT> value, @NonNull ProtocolVersion protocolVersion) {
     // An int indicating the number of elements in the list, followed by the elements. Each element
     // is a byte array representing the serialized value, preceded by an int indicating its size.
     if (value == null) {
@@ -69,7 +77,7 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
       int i = 0;
       ByteBuffer[] encodedElements = new ByteBuffer[value.size()];
       int toAllocate = 4; // initialize with number of elements
-      for (T element : value) {
+      for (ElementT element : value) {
         if (element == null) {
           throw new NullPointerException("Collection elements cannot be null");
         }
@@ -78,6 +86,9 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
           encodedElement = elementCodec.encode(element, protocolVersion);
         } catch (ClassCastException e) {
           throw new IllegalArgumentException("Invalid type for element: " + element.getClass());
+        }
+        if (encodedElement == null) {
+          throw new NullPointerException("Collection elements cannot encode to CQL NULL");
         }
         encodedElements[i++] = encodedElement;
         toAllocate += 4 + encodedElement.remaining(); // the element preceded by its size
@@ -93,33 +104,44 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
     }
   }
 
+  @Nullable
   @Override
-  public List<T> decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public List<ElementT> decode(
+      @Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null || bytes.remaining() == 0) {
       return new ArrayList<>(0);
     } else {
       ByteBuffer input = bytes.duplicate();
       int size = input.getInt();
-      List<T> result = new ArrayList<>(size);
+      List<ElementT> result = new ArrayList<>(size);
       for (int i = 0; i < size; i++) {
+        ElementT element;
         int elementSize = input.getInt();
-        ByteBuffer encodedElement = input.slice();
-        encodedElement.limit(elementSize);
-        input.position(input.position() + elementSize);
-        result.add(elementCodec.decode(encodedElement, protocolVersion));
+        // Allow null elements on the decode path, because Cassandra might return such collections
+        // for some computed values in the future -- e.g. SELECT ttl(some_collection)
+        if (elementSize < 0) {
+          element = null;
+        } else {
+          ByteBuffer encodedElement = input.slice();
+          encodedElement.limit(elementSize);
+          element = elementCodec.decode(encodedElement, protocolVersion);
+          input.position(input.position() + elementSize);
+        }
+        result.add(element);
       }
       return result;
     }
   }
 
+  @NonNull
   @Override
-  public String format(List<T> value) {
+  public String format(@Nullable List<ElementT> value) {
     if (value == null) {
       return "NULL";
     }
     StringBuilder sb = new StringBuilder("[");
     boolean first = true;
-    for (T t : value) {
+    for (ElementT t : value) {
       if (first) {
         first = false;
       } else {
@@ -131,8 +153,9 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
     return sb.toString();
   }
 
+  @Nullable
   @Override
-  public List<T> parse(String value) {
+  public List<ElementT> parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) return null;
 
     int idx = ParseUtils.skipSpaces(value, 0);
@@ -148,7 +171,7 @@ public class ListCodec<T> implements TypeCodec<List<T>> {
       return new ArrayList<>(0);
     }
 
-    List<T> list = new ArrayList<>();
+    List<ElementT> list = new ArrayList<>();
     while (idx < value.length()) {
       int n;
       try {

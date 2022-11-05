@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Indicates a syntactically correct, but invalid query.
@@ -27,16 +30,21 @@ import com.datastax.oss.driver.api.core.retry.RetryPolicy;
  */
 public class InvalidQueryException extends QueryValidationException {
 
-  public InvalidQueryException(Node coordinator, String message) {
-    this(coordinator, message, false);
+  public InvalidQueryException(@NonNull Node coordinator, @NonNull String message) {
+    this(coordinator, message, null, false);
   }
 
-  private InvalidQueryException(Node coordinator, String message, boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+  private InvalidQueryException(
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @Nullable ExecutionInfo executionInfo,
+      boolean writableStackTrace) {
+    super(coordinator, message, executionInfo, writableStackTrace);
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new InvalidQueryException(getCoordinator(), getMessage(), true);
+    return new InvalidQueryException(getCoordinator(), getMessage(), getExecutionInfo(), true);
   }
 }

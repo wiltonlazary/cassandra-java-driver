@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,52 +15,75 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import java.net.InetAddress;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import net.jcip.annotations.Immutable;
+import net.jcip.annotations.NotThreadSafe;
 
+@Immutable
 public class DefaultNodeInfo implements NodeInfo {
   public static Builder builder() {
     return new Builder();
   }
 
-  private final InetSocketAddress connectAddress;
-  private final Optional<InetAddress> broadcastAddress;
-  private final Optional<InetAddress> listenAddress;
+  private final EndPoint endPoint;
+  private final InetSocketAddress broadcastRpcAddress;
+  private final InetSocketAddress broadcastAddress;
+  private final InetSocketAddress listenAddress;
   private final String datacenter;
   private final String rack;
   private final String cassandraVersion;
+  private final String partitioner;
   private final Set<String> tokens;
   private final Map<String, Object> extras;
+  private final UUID hostId;
+  private final UUID schemaVersion;
 
   private DefaultNodeInfo(Builder builder) {
-    this.connectAddress = builder.connectAddress;
+    this.endPoint = builder.endPoint;
+    this.broadcastRpcAddress = builder.broadcastRpcAddress;
     this.broadcastAddress = builder.broadcastAddress;
     this.listenAddress = builder.listenAddress;
     this.datacenter = builder.datacenter;
     this.rack = builder.rack;
     this.cassandraVersion = builder.cassandraVersion;
+    this.partitioner = builder.partitioner;
     this.tokens = (builder.tokens == null) ? Collections.emptySet() : builder.tokens;
+    this.hostId = builder.hostId;
+    this.schemaVersion = builder.schemaVersion;
     this.extras = (builder.extras == null) ? Collections.emptyMap() : builder.extras;
   }
 
+  @NonNull
   @Override
-  public InetSocketAddress getConnectAddress() {
-    return connectAddress;
+  public EndPoint getEndPoint() {
+    return endPoint;
   }
 
+  @NonNull
   @Override
-  public Optional<InetAddress> getBroadcastAddress() {
-    return broadcastAddress;
+  public Optional<InetSocketAddress> getBroadcastRpcAddress() {
+    return Optional.ofNullable(broadcastRpcAddress);
   }
 
+  @NonNull
   @Override
-  public Optional<InetAddress> getListenAddress() {
-    return listenAddress;
+  public Optional<InetSocketAddress> getBroadcastAddress() {
+    return Optional.ofNullable(broadcastAddress);
+  }
+
+  @NonNull
+  @Override
+  public Optional<InetSocketAddress> getListenAddress() {
+    return Optional.ofNullable(listenAddress);
   }
 
   @Override
@@ -79,6 +102,11 @@ public class DefaultNodeInfo implements NodeInfo {
   }
 
   @Override
+  public String getPartitioner() {
+    return partitioner;
+  }
+
+  @Override
   public Set<String> getTokens() {
     return tokens;
   }
@@ -88,60 +116,94 @@ public class DefaultNodeInfo implements NodeInfo {
     return extras;
   }
 
+  @NonNull
+  @Override
+  public UUID getHostId() {
+    return hostId;
+  }
+
+  @Override
+  public UUID getSchemaVersion() {
+    return schemaVersion;
+  }
+
+  @NotThreadSafe
   public static class Builder {
-    private InetSocketAddress connectAddress;
-    private Optional<InetAddress> broadcastAddress = Optional.empty();
-    private Optional<InetAddress> listenAddress = Optional.empty();
+    private EndPoint endPoint;
+    private InetSocketAddress broadcastRpcAddress;
+    private InetSocketAddress broadcastAddress;
+    private InetSocketAddress listenAddress;
     private String datacenter;
     private String rack;
     private String cassandraVersion;
+    private String partitioner;
     private Set<String> tokens;
     private Map<String, Object> extras;
+    private UUID hostId;
+    private UUID schemaVersion;
 
-    public Builder withConnectAddress(InetSocketAddress address) {
-      this.connectAddress = address;
+    public Builder withEndPoint(@NonNull EndPoint endPoint) {
+      this.endPoint = endPoint;
       return this;
     }
 
-    public Builder withBroadcastAddress(InetAddress address) {
-      if (address != null) {
-        this.broadcastAddress = Optional.of(address);
-      }
+    public Builder withBroadcastRpcAddress(@Nullable InetSocketAddress address) {
+      this.broadcastRpcAddress = address;
       return this;
     }
 
-    public Builder withListenAddress(InetAddress address) {
-      if (address != null) {
-        this.listenAddress = Optional.of(address);
-      }
+    public Builder withBroadcastAddress(@Nullable InetSocketAddress address) {
+      this.broadcastAddress = address;
       return this;
     }
 
-    public Builder withDatacenter(String datacenter) {
+    public Builder withListenAddress(@Nullable InetSocketAddress address) {
+      this.listenAddress = address;
+      return this;
+    }
+
+    public Builder withDatacenter(@Nullable String datacenter) {
       this.datacenter = datacenter;
       return this;
     }
 
-    public Builder withRack(String rack) {
+    public Builder withRack(@Nullable String rack) {
       this.rack = rack;
       return this;
     }
 
-    public Builder withCassandraVersion(String cassandraVersion) {
+    public Builder withCassandraVersion(@Nullable String cassandraVersion) {
       this.cassandraVersion = cassandraVersion;
       return this;
     }
 
-    public Builder withTokens(Set<String> tokens) {
+    public Builder withPartitioner(@Nullable String partitioner) {
+      this.partitioner = partitioner;
+      return this;
+    }
+
+    public Builder withTokens(@Nullable Set<String> tokens) {
       this.tokens = tokens;
       return this;
     }
 
-    public Builder withExtra(String key, Object value) {
-      if (this.extras == null) {
-        this.extras = new HashMap<>();
+    public Builder withHostId(@NonNull UUID hostId) {
+      this.hostId = hostId;
+      return this;
+    }
+
+    public Builder withSchemaVersion(@Nullable UUID schemaVersion) {
+      this.schemaVersion = schemaVersion;
+      return this;
+    }
+
+    public Builder withExtra(@NonNull String key, @Nullable Object value) {
+      if (value != null) {
+        if (this.extras == null) {
+          this.extras = new HashMap<>();
+        }
+        this.extras.put(key, value);
       }
-      this.extras.put(key, value);
       return this;
     }
 

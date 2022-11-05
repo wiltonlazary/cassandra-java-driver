@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,11 @@
  */
 package com.datastax.oss.driver.internal.core;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.driver.api.core.config.DriverConfig;
 import com.datastax.oss.driver.api.core.config.DriverOption;
 import org.assertj.core.api.AbstractAssert;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 public class DriverConfigAssert extends AbstractAssert<DriverConfigAssert, DriverConfig> {
   public DriverConfigAssert(DriverConfig actual) {
@@ -32,7 +32,7 @@ public class DriverConfigAssert extends AbstractAssert<DriverConfigAssert, Drive
   }
 
   public DriverConfigAssert hasIntOption(String profileName, DriverOption option, int expected) {
-    assertThat(actual.getNamedProfile(profileName).getInt(option)).isEqualTo(expected);
+    assertThat(actual.getProfile(profileName).getInt(option)).isEqualTo(expected);
     return this;
   }
 }

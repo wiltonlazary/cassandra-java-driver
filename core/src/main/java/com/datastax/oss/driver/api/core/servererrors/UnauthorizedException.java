@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Indicates that a query cannot be performed due to the authorization restrictions of the logged
@@ -28,16 +31,21 @@ import com.datastax.oss.driver.api.core.retry.RetryPolicy;
  */
 public class UnauthorizedException extends QueryValidationException {
 
-  public UnauthorizedException(Node coordinator, String message) {
-    this(coordinator, message, false);
+  public UnauthorizedException(@NonNull Node coordinator, @NonNull String message) {
+    this(coordinator, message, null, false);
   }
 
-  private UnauthorizedException(Node coordinator, String message, boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+  private UnauthorizedException(
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @Nullable ExecutionInfo executionInfo,
+      boolean writableStackTrace) {
+    super(coordinator, message, executionInfo, writableStackTrace);
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new UnauthorizedException(getCoordinator(), getMessage(), true);
+    return new UnauthorizedException(getCoordinator(), getMessage(), getExecutionInfo(), true);
   }
 }

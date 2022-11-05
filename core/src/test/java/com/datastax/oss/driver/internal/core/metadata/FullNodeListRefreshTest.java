@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,40 +15,73 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import java.net.InetSocketAddress;
-import org.junit.Test;
-
 import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import com.datastax.oss.driver.api.core.uuid.Uuids;
+import com.datastax.oss.driver.internal.core.channel.ChannelFactory;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metrics.MetricsFactory;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
+import java.util.Collections;
+import java.util.UUID;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+
+@RunWith(MockitoJUnitRunner.class)
 public class FullNodeListRefreshTest {
 
-  private static final InetSocketAddress ADDRESS1 = new InetSocketAddress("127.0.0.1", 9042);
-  private static final InetSocketAddress ADDRESS2 = new InetSocketAddress("127.0.0.2", 9042);
-  private static final InetSocketAddress ADDRESS3 = new InetSocketAddress("127.0.0.3", 9042);
+  @Mock private InternalDriverContext context;
+  @Mock protected MetricsFactory metricsFactory;
+  @Mock private ChannelFactory channelFactory;
 
-  private static final DefaultNode node1 = new DefaultNode(ADDRESS1);
-  private static final DefaultNode node2 = new DefaultNode(ADDRESS2);
-  private static final DefaultNode node3 = new DefaultNode(ADDRESS3);
+  private DefaultNode node1;
+  private DefaultNode node2;
+  private EndPoint endPoint3;
+  private UUID hostId3;
+
+  @Before
+  public void setup() {
+    when(context.getMetricsFactory()).thenReturn(metricsFactory);
+    when(context.getChannelFactory()).thenReturn(channelFactory);
+
+    node1 = TestNodeFactory.newNode(1, context);
+    node2 = TestNodeFactory.newNode(2, context);
+
+    endPoint3 = TestNodeFactory.newEndPoint(3);
+    hostId3 = UUID.randomUUID();
+  }
 
   @Test
   public void should_add_and_remove_nodes() {
     // Given
     DefaultMetadata oldMetadata =
-        new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1, ADDRESS2, node2));
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1, node2.getHostId(), node2),
+            Collections.emptyMap(),
+            null,
+            null);
     Iterable<NodeInfo> newInfos =
         ImmutableList.of(
-            DefaultNodeInfo.builder().withConnectAddress(ADDRESS2).build(),
-            DefaultNodeInfo.builder().withConnectAddress(ADDRESS3).build());
-    FullNodeListRefresh refresh = new FullNodeListRefresh(oldMetadata, newInfos, "test");
+            DefaultNodeInfo.builder()
+                .withEndPoint(node2.getEndPoint())
+                .withHostId(node2.getHostId())
+                .build(),
+            DefaultNodeInfo.builder().withEndPoint(endPoint3).withHostId(hostId3).build());
+    FullNodeListRefresh refresh = new FullNodeListRefresh(newInfos);
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    assertThat(refresh.newMetadata.getNodes()).containsOnlyKeys(ADDRESS2, ADDRESS3);
-    assertThat(refresh.events)
+    assertThat(result.newMetadata.getNodes()).containsOnlyKeys(node2.getHostId(), hostId3);
+    DefaultNode node3 = (DefaultNode) result.newMetadata.getNodes().get(hostId3);
+    assertThat(result.events)
         .containsOnly(NodeStateEvent.removed(node1), NodeStateEvent.added(node3));
   }
 
@@ -56,30 +89,90 @@ public class FullNodeListRefreshTest {
   public void should_update_existing_nodes() {
     // Given
     DefaultMetadata oldMetadata =
-        new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1, ADDRESS2, node2));
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1, node2.getHostId(), node2),
+            Collections.emptyMap(),
+            null,
+            null);
+
+    UUID schemaVersion1 = Uuids.random();
+    UUID schemaVersion2 = Uuids.random();
     Iterable<NodeInfo> newInfos =
         ImmutableList.of(
             DefaultNodeInfo.builder()
-                .withConnectAddress(ADDRESS1)
+                .withEndPoint(node1.getEndPoint())
                 .withDatacenter("dc1")
                 .withRack("rack1")
+                .withHostId(node1.getHostId())
+                .withSchemaVersion(schemaVersion1)
                 .build(),
             DefaultNodeInfo.builder()
-                .withConnectAddress(ADDRESS2)
+                .withEndPoint(node2.getEndPoint())
                 .withDatacenter("dc1")
                 .withRack("rack2")
+                .withHostId(node2.getHostId())
+                .withSchemaVersion(schemaVersion2)
                 .build());
-    FullNodeListRefresh refresh = new FullNodeListRefresh(oldMetadata, newInfos, "test");
+    FullNodeListRefresh refresh = new FullNodeListRefresh(newInfos);
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    assertThat(refresh.newMetadata.getNodes()).containsOnlyKeys(ADDRESS1, ADDRESS2);
+    assertThat(result.newMetadata.getNodes())
+        .containsOnlyKeys(node1.getHostId(), node2.getHostId());
+    assertThat(node1.getDatacenter()).isEqualTo("dc1");
+    assertThat(node1.getRack()).isEqualTo("rack1");
+    assertThat(node1.getSchemaVersion()).isEqualTo(schemaVersion1);
+    assertThat(node2.getDatacenter()).isEqualTo("dc1");
+    assertThat(node2.getRack()).isEqualTo("rack2");
+    assertThat(node2.getSchemaVersion()).isEqualTo(schemaVersion2);
+    assertThat(result.events).isEmpty();
+  }
+
+  @Test
+  public void should_ignore_duplicate_host_ids() {
+    // Given
+    DefaultMetadata oldMetadata =
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1, node2.getHostId(), node2),
+            Collections.emptyMap(),
+            null,
+            null);
+
+    Iterable<NodeInfo> newInfos =
+        ImmutableList.of(
+            DefaultNodeInfo.builder()
+                .withEndPoint(node1.getEndPoint())
+                .withDatacenter("dc1")
+                .withRack("rack1")
+                .withHostId(node1.getHostId())
+                .build(),
+            DefaultNodeInfo.builder()
+                .withEndPoint(node2.getEndPoint())
+                .withDatacenter("dc1")
+                .withRack("rack2")
+                .withHostId(node2.getHostId())
+                .build(),
+            // Duplicate host id for node 2, should be ignored:
+            DefaultNodeInfo.builder()
+                .withEndPoint(node2.getEndPoint())
+                .withDatacenter("dc1")
+                .withRack("rack3")
+                .withHostId(node2.getHostId())
+                .build());
+    FullNodeListRefresh refresh = new FullNodeListRefresh(newInfos);
+
+    // When
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
+
+    // Then
+    assertThat(result.newMetadata.getNodes())
+        .containsOnlyKeys(node1.getHostId(), node2.getHostId());
     assertThat(node1.getDatacenter()).isEqualTo("dc1");
     assertThat(node1.getRack()).isEqualTo("rack1");
     assertThat(node2.getDatacenter()).isEqualTo("dc1");
     assertThat(node2.getRack()).isEqualTo("rack2");
-    assertThat(refresh.events).isEmpty();
+    assertThat(result.events).isEmpty();
   }
 }

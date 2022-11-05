@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,61 +20,107 @@ import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import com.datastax.oss.driver.internal.core.util.Strings;
-import com.datastax.oss.protocol.internal.util.Bytes;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
+import io.netty.util.concurrent.FastThreadLocal;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class StringCodec implements TypeCodec<String> {
 
   private final DataType cqlType;
-  private final Charset charset;
+  private final FastThreadLocal<CharsetEncoder> charsetEncoder;
+  private final FastThreadLocal<CharsetDecoder> charsetDecoder;
 
-  public StringCodec(DataType cqlType, Charset charset) {
+  public StringCodec(@NonNull DataType cqlType, @NonNull Charset charset) {
     this.cqlType = cqlType;
-    this.charset = charset;
+    charsetEncoder =
+        new FastThreadLocal<CharsetEncoder>() {
+          @Override
+          protected CharsetEncoder initialValue() throws Exception {
+            return charset
+                .newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+          }
+        };
+    charsetDecoder =
+        new FastThreadLocal<CharsetDecoder>() {
+          @Override
+          protected CharsetDecoder initialValue() throws Exception {
+            return charset
+                .newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+          }
+        };
   }
 
+  @NonNull
   @Override
   public GenericType<String> getJavaType() {
     return GenericType.STRING;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return cqlType;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return value instanceof String;
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
+  public boolean accepts(@NonNull Class<?> javaClass) {
     return javaClass == String.class;
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(String value, ProtocolVersion protocolVersion) {
-    return (value == null) ? null : ByteBuffer.wrap(value.getBytes(charset));
+  public ByteBuffer encode(@Nullable String value, @NonNull ProtocolVersion protocolVersion) {
+    if (value == null) {
+      return null;
+    }
+    try {
+      return charsetEncoder.get().encode(CharBuffer.wrap(value));
+    } catch (CharacterCodingException e) {
+      throw new IllegalArgumentException(e);
+    }
   }
 
+  @Nullable
   @Override
-  public String decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public String decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null) {
       return null;
     } else if (bytes.remaining() == 0) {
       return "";
     } else {
-      return new String(Bytes.getArray(bytes), charset);
+      try {
+        return charsetDecoder.get().decode(bytes.duplicate()).toString();
+      } catch (CharacterCodingException e) {
+        throw new IllegalArgumentException(e);
+      }
     }
   }
 
+  @NonNull
   @Override
-  public String format(String value) {
+  public String format(@Nullable String value) {
     return (value == null) ? "NULL" : Strings.quote(value);
   }
 
+  @Nullable
   @Override
   public String parse(String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
  */
 package com.datastax.oss.driver.api.core.ssl;
 
-import java.net.SocketAddress;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.net.ssl.SSLEngine;
 
 /**
@@ -25,12 +26,13 @@ import javax.net.ssl.SSLEngine;
  * implementation), the driver's internal API provides a lower-level interface: {@link
  * com.datastax.oss.driver.internal.core.ssl.SslHandlerFactory}.
  */
-public interface SslEngineFactory {
+public interface SslEngineFactory extends AutoCloseable {
   /**
    * Creates a new SSL engine each time a connection is established.
    *
    * @param remoteEndpoint the remote endpoint we are connecting to (the address of the Cassandra
    *     node).
    */
-  SSLEngine newSslEngine(SocketAddress remoteEndpoint);
+  @NonNull
+  SSLEngine newSslEngine(@NonNull EndPoint remoteEndpoint);
 }

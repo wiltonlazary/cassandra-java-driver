@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,8 @@ package com.datastax.oss.driver.api.core.connection;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.DriverException;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Thrown when the connection on which a request was executing is closed due to an unrelated event.
@@ -24,24 +26,27 @@ import com.datastax.oss.driver.api.core.DriverException;
  * <p>For example, this can happen if the node is unresponsive and a heartbeat query failed, or if
  * the node was forced down.
  *
- * <p>The driver will always retry these requests on the next node transparently. Therefore, the
- * only way to observe this exception is as part of an {@link AllNodesFailedException}.
+ * <p>The driver will retry these requests on the next node transparently, unless the request is not
+ * idempotent. Therefore, this exception is usually observed as part of an {@link
+ * AllNodesFailedException}.
  */
 public class ClosedConnectionException extends DriverException {
 
-  public ClosedConnectionException(String message) {
+  public ClosedConnectionException(@NonNull String message) {
     this(message, null, false);
   }
 
-  public ClosedConnectionException(String message, Throwable cause) {
+  public ClosedConnectionException(@NonNull String message, @Nullable Throwable cause) {
     this(message, cause, false);
   }
 
-  private ClosedConnectionException(String message, Throwable cause, boolean writableStackTrace) {
-    super(message, cause, writableStackTrace);
+  private ClosedConnectionException(
+      @NonNull String message, @Nullable Throwable cause, boolean writableStackTrace) {
+    super(message, null, cause, writableStackTrace);
   }
 
   @Override
+  @NonNull
   public DriverException copy() {
     return new ClosedConnectionException(getMessage(), getCause(), true);
   }

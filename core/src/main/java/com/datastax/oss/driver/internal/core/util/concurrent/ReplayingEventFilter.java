@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
  */
 package com.datastax.oss.driver.internal.core.util.concurrent;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import net.jcip.annotations.GuardedBy;
+import net.jcip.annotations.ThreadSafe;
 
 /**
  * Filters a list of events, accumulating them during an initialization period.
@@ -35,7 +37,8 @@ import java.util.function.Consumer;
  *       propagated directly. The order of events is preserved at all times.
  * </ul>
  */
-public class ReplayingEventFilter<T> {
+@ThreadSafe
+public class ReplayingEventFilter<EventT> {
 
   private enum State {
     NEW,
@@ -43,14 +46,18 @@ public class ReplayingEventFilter<T> {
     READY
   }
 
-  private final Consumer<T> consumer;
+  private final Consumer<EventT> consumer;
 
   // Exceptionally, we use a lock: it will rarely be contended, and if so for only a short period.
   private final ReadWriteLock stateLock = new ReentrantReadWriteLock();
-  private State state;
-  private List<T> recordedEvents;
 
-  public ReplayingEventFilter(Consumer<T> consumer) {
+  @GuardedBy("stateLock")
+  private State state;
+
+  @GuardedBy("stateLock")
+  private final List<EventT> recordedEvents;
+
+  public ReplayingEventFilter(Consumer<EventT> consumer) {
     this.consumer = consumer;
     this.state = State.NEW;
     this.recordedEvents = new CopyOnWriteArrayList<>();
@@ -69,7 +76,7 @@ public class ReplayingEventFilter<T> {
     stateLock.writeLock().lock();
     try {
       state = State.READY;
-      for (T event : recordedEvents) {
+      for (EventT event : recordedEvents) {
         consumer.accept(event);
       }
     } finally {
@@ -77,7 +84,7 @@ public class ReplayingEventFilter<T> {
     }
   }
 
-  public void accept(T event) {
+  public void accept(EventT event) {
     stateLock.readLock().lock();
     try {
       switch (state) {
@@ -96,7 +103,7 @@ public class ReplayingEventFilter<T> {
   }
 
   @VisibleForTesting
-  public List<T> recordedEvents() {
+  public List<EventT> recordedEvents() {
     stateLock.readLock().lock();
     try {
       return ImmutableList.copyOf(recordedEvents);

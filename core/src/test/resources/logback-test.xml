@@ -1,6 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
 
-    Copyright (C) 2017-2017 DataStax Inc.
+    Copyright DataStax, Inc.
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -16,13 +17,14 @@
 
 -->
 <configuration>
-    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
-    <root level="ERROR">
-        <appender-ref ref="STDOUT"/>
-    </root>
-    <logger name="com.datastax.oss.driver" level= "${driverLevel:-WARN}"/>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+    </encoder>
+  </appender>
+  <root level="ERROR">
+    <appender-ref ref="STDOUT"/>
+  </root>
+  <logger name="com.datastax.oss.driver" level="${ossDriverLevel:-WARN}"/>
+  <logger name="com.datastax.dse.driver" level="${dseDriverLevel:-WARN}"/>
 </configuration>

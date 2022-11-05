@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,16 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
-import com.google.common.base.Strings;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import com.datastax.oss.driver.shaded.guava.common.base.Strings;
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import org.junit.Test;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
 
 public class InetCodecTest extends CodecTestBase<InetAddress> {
 
@@ -93,5 +95,24 @@ public class InetCodecTest extends CodecTestBase<InetAddress> {
   @Test(expected = IllegalArgumentException.class)
   public void should_fail_to_parse_invalid_input() {
     parse("not an address");
+  }
+
+  @Test
+  public void should_accept_generic_type() {
+    assertThat(codec.accepts(GenericType.of(InetAddress.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(Inet4Address.class)))
+        .isFalse(); // covariance not allowed
+  }
+
+  @Test
+  public void should_accept_raw_type() {
+    assertThat(codec.accepts(InetAddress.class)).isTrue();
+    assertThat(codec.accepts(Inet4Address.class)).isFalse(); // covariance not allowed
+  }
+
+  @Test
+  public void should_accept_object() {
+    assertThat(codec.accepts(V4_ADDRESS)).isTrue(); // covariance allowed
+    assertThat(codec.accepts(V6_ADDRESS)).isTrue(); // covariance allowed
   }
 }

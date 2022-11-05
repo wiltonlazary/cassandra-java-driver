@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,20 +15,29 @@
  */
 package com.datastax.oss.driver.api.core;
 
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import com.datastax.oss.driver.api.core.cql.Statement;
+import edu.umd.cs.findbugs.annotations.NonNull;
+
 /**
- * Thrown by synchronous wrapper methods (such as {@link Cluster#connect()}, when the underlying
- * future was completed with a <em>checked</em> exception.
+ * Thrown by synchronous wrapper methods (such as {@link CqlSession#execute(Statement)}, when the
+ * underlying future was completed with a <em>checked</em> exception.
  *
  * <p>This exception should be rarely thrown (if ever). Most of the time, the driver uses unchecked
  * exceptions, which will be rethrown directly instead of being wrapped in this class.
  */
 public class DriverExecutionException extends DriverException {
   public DriverExecutionException(Throwable cause) {
-    super(null, cause, true);
+    this(null, cause);
   }
 
+  private DriverExecutionException(ExecutionInfo executionInfo, Throwable cause) {
+    super(null, executionInfo, cause, true);
+  }
+
+  @NonNull
   @Override
   public DriverException copy() {
-    return new DriverExecutionException(getCause());
+    return new DriverExecutionException(getExecutionInfo(), getCause());
   }
 }

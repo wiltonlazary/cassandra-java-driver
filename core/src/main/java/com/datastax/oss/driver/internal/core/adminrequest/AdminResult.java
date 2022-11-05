@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,32 +16,30 @@
 package com.datastax.oss.driver.internal.core.adminrequest;
 
 import com.datastax.oss.driver.api.core.ProtocolVersion;
-import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
-import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
+import com.datastax.oss.driver.shaded.guava.common.collect.AbstractIterator;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
 import com.datastax.oss.protocol.internal.response.result.ColumnSpec;
 import com.datastax.oss.protocol.internal.response.result.Rows;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.AbstractIterator;
-import com.google.common.collect.ImmutableMap;
-import java.net.InetAddress;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
-import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletionStage;
+import net.jcip.annotations.NotThreadSafe;
 
-public class AdminResult implements Iterable<AdminResult.Row> {
+@NotThreadSafe // wraps a mutable queue
+public class AdminResult implements Iterable<AdminRow> {
 
   private final Queue<List<ByteBuffer>> data;
   private final Map<String, ColumnSpec> columnSpecs;
-  private final AdminRequestHandler nextHandler;
+  private final AdminRequestHandler<AdminResult> nextHandler;
   private final ProtocolVersion protocolVersion;
 
-  public AdminResult(Rows rows, AdminRequestHandler nextHandler, ProtocolVersion protocolVersion) {
+  public AdminResult(
+      Rows rows, AdminRequestHandler<AdminResult> nextHandler, ProtocolVersion protocolVersion) {
     this.data = rows.getData();
 
     ImmutableMap.Builder<String, ColumnSpec> columnSpecsBuilder = ImmutableMap.builder();
@@ -57,13 +55,16 @@ public class AdminResult implements Iterable<AdminResult.Row> {
   }
 
   /** This consumes the result's data and can be called only once. */
+  @NonNull
   @Override
-  public Iterator<Row> iterator() {
-    return new AbstractIterator<Row>() {
+  public Iterator<AdminRow> iterator() {
+    return new AbstractIterator<AdminRow>() {
       @Override
-      protected Row computeNext() {
+      protected AdminRow computeNext() {
         List<ByteBuffer> rowData = data.poll();
-        return (rowData == null) ? endOfData() : new Row(columnSpecs, rowData, protocolVersion);
+        return (rowData == null)
+            ? endOfData()
+            : new AdminRow(columnSpecs, rowData, protocolVersion);
       }
     };
   }
@@ -77,91 +78,5 @@ public class AdminResult implements Iterable<AdminResult.Row> {
         ? CompletableFutures.failedFuture(
             new AssertionError("No next page, use hasNextPage() before you call this method"))
         : nextHandler.start();
-  }
-
-  public static class Row {
-    private static final TypeCodec<Map<String, String>> MAP_OF_TEXT_TO_TEXT =
-        TypeCodecs.mapOf(TypeCodecs.TEXT, TypeCodecs.TEXT);
-    private static final TypeCodec<Map<String, ByteBuffer>> MAP_OF_TEXT_TO_BLOB =
-        TypeCodecs.mapOf(TypeCodecs.TEXT, TypeCodecs.BLOB);
-    private static final TypeCodec<Map<UUID, ByteBuffer>> MAP_OF_UUID_TO_BLOB =
-        TypeCodecs.mapOf(TypeCodecs.UUID, TypeCodecs.BLOB);
-
-    @VisibleForTesting
-    static final TypeCodec<List<String>> LIST_OF_TEXT = TypeCodecs.listOf(TypeCodecs.TEXT);
-
-    private static final TypeCodec<Set<String>> SET_OF_TEXT = TypeCodecs.setOf(TypeCodecs.TEXT);
-
-    private final Map<String, ColumnSpec> columnSpecs;
-    private final List<ByteBuffer> data;
-    private final ProtocolVersion protocolVersion;
-
-    private Row(
-        Map<String, ColumnSpec> columnSpecs,
-        List<ByteBuffer> data,
-        ProtocolVersion protocolVersion) {
-      this.columnSpecs = columnSpecs;
-      this.data = data;
-      this.protocolVersion = protocolVersion;
-    }
-
-    public Boolean getBoolean(String columnName) {
-      return get(columnName, TypeCodecs.BOOLEAN);
-    }
-
-    public Integer getInteger(String columnName) {
-      return get(columnName, TypeCodecs.INT);
-    }
-
-    public Double getDouble(String columnName) {
-      return get(columnName, TypeCodecs.DOUBLE);
-    }
-
-    public String getString(String columnName) {
-      return get(columnName, TypeCodecs.TEXT);
-    }
-
-    public UUID getUuid(String columnName) {
-      return get(columnName, TypeCodecs.UUID);
-    }
-
-    public ByteBuffer getByteBuffer(String columnName) {
-      return get(columnName, TypeCodecs.BLOB);
-    }
-
-    public InetAddress getInetAddress(String columnName) {
-      return get(columnName, TypeCodecs.INET);
-    }
-
-    public List<String> getListOfString(String columnName) {
-      return get(columnName, LIST_OF_TEXT);
-    }
-
-    public Set<String> getSetOfString(String columnName) {
-      return get(columnName, SET_OF_TEXT);
-    }
-
-    public Map<String, String> getMapOfStringToString(String columnName) {
-      return get(columnName, MAP_OF_TEXT_TO_TEXT);
-    }
-
-    public Map<String, ByteBuffer> getMapOfStringToByteBuffer(String columnName) {
-      return get(columnName, MAP_OF_TEXT_TO_BLOB);
-    }
-
-    public Map<UUID, ByteBuffer> getMapOfUuidToByteBuffer(String columnName) {
-      return get(columnName, MAP_OF_UUID_TO_BLOB);
-    }
-
-    private <T> T get(String columnName, TypeCodec<T> codec) {
-      // Minimal checks here: this is for internal use, so the caller should know what they're
-      // doing
-      if (!columnSpecs.containsKey(columnName)) {
-        return null;
-      } else {
-        int index = columnSpecs.get(columnName).index;
-        return codec.decode(data.get(index), protocolVersion);
-      }
-    }
   }
 }

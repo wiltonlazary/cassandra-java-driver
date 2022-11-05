@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,39 +22,46 @@ import com.datastax.oss.driver.api.core.type.TupleType;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
+import net.jcip.annotations.ThreadSafe;
 
+@ThreadSafe
 public class TupleCodec implements TypeCodec<TupleValue> {
 
   private final TupleType cqlType;
 
-  public TupleCodec(TupleType cqlType) {
+  public TupleCodec(@NonNull TupleType cqlType) {
     this.cqlType = cqlType;
   }
 
+  @NonNull
   @Override
   public GenericType<TupleValue> getJavaType() {
     return GenericType.TUPLE_VALUE;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return cqlType;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return (value instanceof TupleValue) && ((TupleValue) value).getType().equals(cqlType);
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
-    return TupleValue.class.isAssignableFrom(javaClass);
+  public boolean accepts(@NonNull Class<?> javaClass) {
+    return TupleValue.class.equals(javaClass);
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(TupleValue value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(@Nullable TupleValue value, @NonNull ProtocolVersion protocolVersion) {
     if (value == null) {
       return null;
     }
@@ -82,8 +89,9 @@ public class TupleCodec implements TypeCodec<TupleValue> {
     return (ByteBuffer) result.flip();
   }
 
+  @Nullable
   @Override
-  public TupleValue decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public TupleValue decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     if (bytes == null) {
       return null;
     }
@@ -101,14 +109,14 @@ public class TupleCodec implements TypeCodec<TupleValue> {
         }
         int elementSize = input.getInt();
         ByteBuffer element;
-        if (elementSize == -1) {
+        if (elementSize < 0) {
           element = null;
         } else {
           element = input.slice();
           element.limit(elementSize);
           input.position(input.position() + elementSize);
         }
-        value.setBytesUnsafe(i, element);
+        value = value.setBytesUnsafe(i, element);
         i += 1;
       }
       return value;
@@ -117,8 +125,9 @@ public class TupleCodec implements TypeCodec<TupleValue> {
     }
   }
 
+  @NonNull
   @Override
-  public String format(TupleValue value) {
+  public String format(@Nullable TupleValue value) {
     if (value == null) {
       return "NULL";
     }
@@ -126,7 +135,7 @@ public class TupleCodec implements TypeCodec<TupleValue> {
       throw new IllegalArgumentException(
           String.format("Invalid tuple type, expected %s but got %s", cqlType, value.getType()));
     }
-    CodecRegistry registry = cqlType.getAttachmentPoint().codecRegistry();
+    CodecRegistry registry = cqlType.getAttachmentPoint().getCodecRegistry();
 
     StringBuilder sb = new StringBuilder("(");
     boolean first = true;
@@ -144,63 +153,93 @@ public class TupleCodec implements TypeCodec<TupleValue> {
     return sb.toString();
   }
 
+  @Nullable
   @Override
-  public TupleValue parse(String value) {
+  public TupleValue parse(@Nullable String value) {
     if (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL")) {
       return null;
     }
 
     TupleValue tuple = cqlType.newValue();
+    int length = value.length();
 
     int position = ParseUtils.skipSpaces(value, 0);
-    if (value.charAt(position++) != '(') {
+    if (value.charAt(position) != '(') {
       throw new IllegalArgumentException(
           String.format(
               "Cannot parse tuple value from \"%s\", at character %d expecting '(' but got '%c'",
               value, position, value.charAt(position)));
     }
 
+    position++;
     position = ParseUtils.skipSpaces(value, position);
 
-    if (value.charAt(position) == ')') {
-      return tuple;
-    }
+    CodecRegistry registry = cqlType.getAttachmentPoint().getCodecRegistry();
 
-    CodecRegistry registry = cqlType.getAttachmentPoint().codecRegistry();
-
-    int i = 0;
-    while (position < value.length()) {
+    int field = 0;
+    while (position < length) {
+      if (value.charAt(position) == ')') {
+        position = ParseUtils.skipSpaces(value, position + 1);
+        if (position == length) {
+          return tuple;
+        }
+        throw new IllegalArgumentException(
+            String.format(
+                "Cannot parse tuple value from \"%s\", at character %d expecting EOF or blank, but got \"%s\"",
+                value, position, value.substring(position)));
+      }
       int n;
       try {
         n = ParseUtils.skipCQLValue(value, position);
       } catch (IllegalArgumentException e) {
         throw new IllegalArgumentException(
             String.format(
-                "Cannot parse tuple value from \"%s\", invalid CQL value at character %d",
-                value, position),
+                "Cannot parse tuple value from \"%s\", invalid CQL value at field %d (character %d)",
+                value, field, position),
             e);
       }
 
       String fieldValue = value.substring(position, n);
-      DataType elementType = cqlType.getComponentTypes().get(i);
+      DataType elementType = cqlType.getComponentTypes().get(field);
       TypeCodec<Object> codec = registry.codecFor(elementType);
-      tuple.set(i, codec.parse(fieldValue), codec);
-
-      position = n;
-      i += 1;
-
-      position = ParseUtils.skipSpaces(value, position);
-      if (value.charAt(position) == ')') return tuple;
-      if (value.charAt(position) != ',')
+      Object parsed;
+      try {
+        parsed = codec.parse(fieldValue);
+      } catch (Exception e) {
         throw new IllegalArgumentException(
             String.format(
-                "Cannot parse tuple value from \"%s\", at character %d expecting ',' but got '%c'",
-                value, position, value.charAt(position)));
+                "Cannot parse tuple value from \"%s\", invalid CQL value at field %d (character %d): %s",
+                value, field, position, e.getMessage()),
+            e);
+      }
+      tuple = tuple.set(field, parsed, codec);
+
+      position = n;
+
+      position = ParseUtils.skipSpaces(value, position);
+      if (position == length) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Cannot parse tuple value from \"%s\", at field %d (character %d) expecting ',' or ')', but got EOF",
+                value, field, position));
+      }
+      if (value.charAt(position) == ')') {
+        continue;
+      }
+      if (value.charAt(position) != ',') {
+        throw new IllegalArgumentException(
+            String.format(
+                "Cannot parse tuple value from \"%s\", at field %d (character %d) expecting ',' but got '%c'",
+                value, field, position, value.charAt(position)));
+      }
       ++position; // skip ','
 
       position = ParseUtils.skipSpaces(value, position);
+      field += 1;
     }
     throw new IllegalArgumentException(
-        String.format("Malformed tuple value \"%s\", missing closing ')'", value));
+        String.format(
+            "Cannot parse tuple value from \"%s\", at field %d (character %d) expecting CQL value or ')', got EOF",
+            value, field, position));
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 package com.datastax.oss.driver.api.core.connection;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.net.SocketAddress;
 
 /**
@@ -28,18 +30,25 @@ public class FrameTooLongException extends DriverException {
 
   private final SocketAddress address;
 
-  public FrameTooLongException(SocketAddress address, String message) {
-    super(message, null, false);
+  public FrameTooLongException(@NonNull SocketAddress address, @NonNull String message) {
+    this(address, message, null);
+  }
+
+  private FrameTooLongException(
+      SocketAddress address, String message, ExecutionInfo executionInfo) {
+    super(message, executionInfo, null, false);
     this.address = address;
   }
 
   /** The address of the node that encountered the error. */
+  @NonNull
   public SocketAddress getAddress() {
     return address;
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new FrameTooLongException(address, getMessage());
+    return new FrameTooLongException(address, getMessage(), getExecutionInfo());
   }
 }

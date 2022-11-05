@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@
  */
 package com.datastax.oss.driver.assertions;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.metadata.NodeState;
 import org.assertj.core.api.AbstractAssert;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 public class NodeMetadataAssert extends AbstractAssert<NodeMetadataAssert, Node> {
 
@@ -35,6 +35,11 @@ public class NodeMetadataAssert extends AbstractAssert<NodeMetadataAssert, Node>
 
   public NodeMetadataAssert isDown() {
     assertThat(actual.getState()).isSameAs(NodeState.DOWN);
+    return this;
+  }
+
+  public NodeMetadataAssert isUnknown() {
+    assertThat(actual.getState()).isSameAs(NodeState.UNKNOWN);
     return this;
   }
 

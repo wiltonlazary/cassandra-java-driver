@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,9 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.datastax.oss.driver.api.core.Cluster;
-import java.util.ArrayList;
+import com.datastax.oss.driver.api.core.session.Session;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -27,22 +28,27 @@ import java.util.List;
  * we are doing the refresh (by contract, the new copy of the metadata needs to be visible before
  * the events are sent). This also makes unit testing very easy.
  *
- * <p>This is only instantiated and called from the metadata manager's admin thread, therefore
+ * <p>This is only instantiated and called from {@link MetadataManager}'s admin thread, therefore
  * implementations don't need to be thread-safe.
  *
- * @see Cluster#getMetadata()
+ * @see Session#getMetadata()
  */
-abstract class MetadataRefresh {
-  final DefaultMetadata oldMetadata;
-  DefaultMetadata newMetadata;
-  final List<Object> events;
-  protected final String logPrefix;
+public interface MetadataRefresh {
 
-  protected MetadataRefresh(DefaultMetadata current, String logPrefix) {
-    this.oldMetadata = current;
-    this.logPrefix = logPrefix;
-    this.events = new ArrayList<>();
+  Result compute(
+      DefaultMetadata oldMetadata, boolean tokenMapEnabled, InternalDriverContext context);
+
+  class Result {
+    public final DefaultMetadata newMetadata;
+    public final List<Object> events;
+
+    public Result(DefaultMetadata newMetadata, List<Object> events) {
+      this.newMetadata = newMetadata;
+      this.events = events;
+    }
+
+    public Result(DefaultMetadata newMetadata) {
+      this(newMetadata, Collections.emptyList());
+    }
   }
-
-  abstract void compute();
 }

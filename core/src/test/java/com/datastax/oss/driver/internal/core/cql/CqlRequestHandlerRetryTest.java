@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,32 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atMost;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.TestDataProviders;
-import com.datastax.oss.driver.api.core.ConsistencyLevel;
+import com.datastax.oss.driver.api.core.DefaultConsistencyLevel;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.connection.HeartbeatException;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.cql.Row;
-import com.datastax.oss.driver.api.core.cql.SimpleStatement;
+import com.datastax.oss.driver.api.core.cql.Statement;
 import com.datastax.oss.driver.api.core.metadata.Node;
-import com.datastax.oss.driver.api.core.retry.RetryDecision;
+import com.datastax.oss.driver.api.core.metrics.DefaultNodeMetric;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
-import com.datastax.oss.driver.api.core.retry.WriteType;
+import com.datastax.oss.driver.api.core.retry.RetryVerdict;
 import com.datastax.oss.driver.api.core.servererrors.BootstrappingException;
+import com.datastax.oss.driver.api.core.servererrors.DefaultWriteType;
 import com.datastax.oss.driver.api.core.servererrors.InvalidQueryException;
 import com.datastax.oss.driver.api.core.servererrors.ReadTimeoutException;
 import com.datastax.oss.driver.api.core.servererrors.ServerError;
@@ -41,19 +55,15 @@ import com.tngtech.java.junit.dataprovider.DataProvider;
 import com.tngtech.java.junit.dataprovider.UseDataProvider;
 import java.util.Iterator;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import org.junit.Test;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 
 public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
 
   @Test
   @UseDataProvider("allIdempotenceConfigs")
   public void should_always_try_next_node_if_bootstrapping(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) {
     try (RequestHandlerTestHarness harness =
         RequestHandlerTestHarness.builder()
             .withDefaultIdempotence(defaultIdempotence)
@@ -66,9 +76,9 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet -> {
                 Iterator<Row> rows = resultSet.currentPage().iterator();
@@ -87,7 +97,7 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
                 assertThat(executionInfo.getSuccessfulExecutionIndex()).isEqualTo(0);
                 assertThat(executionInfo.getWarnings()).isEmpty();
 
-                Mockito.verifyNoMoreInteractions(harness.getContext().retryPolicy());
+                verifyNoMoreInteractions(harness.getContext().getRetryPolicy(anyString()));
               });
     }
   }
@@ -95,7 +105,7 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
   @Test
   @UseDataProvider("allIdempotenceConfigs")
   public void should_always_rethrow_query_validation_error(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) {
     try (RequestHandlerTestHarness harness =
         RequestHandlerTestHarness.builder()
             .withDefaultIdempotence(defaultIdempotence)
@@ -106,15 +116,28 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(
               error -> {
                 assertThat(error)
                     .isInstanceOf(InvalidQueryException.class)
                     .hasMessage("mock message");
-                Mockito.verifyNoMoreInteractions(harness.getContext().retryPolicy());
+                verifyNoMoreInteractions(harness.getContext().getRetryPolicy(anyString()));
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        DefaultNodeMetric.OTHER_ERRORS, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
               });
     }
   }
@@ -122,21 +145,21 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
   @Test
   @UseDataProvider("failureAndIdempotent")
   public void should_try_next_node_if_idempotent_and_retry_policy_decides_so(
-      FailureScenario failureScenario, boolean defaultIdempotence, SimpleStatement statement) {
+      FailureScenario failureScenario, boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     failureScenario.mockRequestError(harnessBuilder, node1);
     harnessBuilder.withResponse(node2, defaultFrameOf(singleRow()));
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
-      failureScenario.mockRetryPolicyDecision(
-          harness.getContext().retryPolicy(), RetryDecision.RETRY_NEXT);
+      failureScenario.mockRetryPolicyVerdict(
+          harness.getContext().getRetryPolicy(anyString()), RetryVerdict.RETRY_NEXT);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet -> {
                 Iterator<Row> rows = resultSet.currentPage().iterator();
@@ -147,6 +170,25 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
                 assertThat(executionInfo.getCoordinator()).isEqualTo(node2);
                 assertThat(executionInfo.getErrors()).hasSize(1);
                 assertThat(executionInfo.getErrors().get(0).getKey()).isEqualTo(node1);
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.errorMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        DefaultNodeMetric.RETRIES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.retryMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
               });
     }
   }
@@ -154,21 +196,21 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
   @Test
   @UseDataProvider("failureAndIdempotent")
   public void should_try_same_node_if_idempotent_and_retry_policy_decides_so(
-      FailureScenario failureScenario, boolean defaultIdempotence, SimpleStatement statement) {
+      FailureScenario failureScenario, boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     failureScenario.mockRequestError(harnessBuilder, node1);
     harnessBuilder.withResponse(node1, defaultFrameOf(singleRow()));
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
-      failureScenario.mockRetryPolicyDecision(
-          harness.getContext().retryPolicy(), RetryDecision.RETRY_SAME);
+      failureScenario.mockRetryPolicyVerdict(
+          harness.getContext().getRetryPolicy(anyString()), RetryVerdict.RETRY_SAME);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet -> {
                 Iterator<Row> rows = resultSet.currentPage().iterator();
@@ -179,6 +221,25 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
                 assertThat(executionInfo.getCoordinator()).isEqualTo(node1);
                 assertThat(executionInfo.getErrors()).hasSize(1);
                 assertThat(executionInfo.getErrors().get(0).getKey()).isEqualTo(node1);
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.errorMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        DefaultNodeMetric.RETRIES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.retryMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(2))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(2))
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
               });
     }
   }
@@ -186,20 +247,20 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
   @Test
   @UseDataProvider("failureAndIdempotent")
   public void should_ignore_error_if_idempotent_and_retry_policy_decides_so(
-      FailureScenario failureScenario, boolean defaultIdempotence, SimpleStatement statement) {
+      FailureScenario failureScenario, boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     failureScenario.mockRequestError(harnessBuilder, node1);
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
-      failureScenario.mockRetryPolicyDecision(
-          harness.getContext().retryPolicy(), RetryDecision.IGNORE);
+      failureScenario.mockRetryPolicyVerdict(
+          harness.getContext().getRetryPolicy(anyString()), RetryVerdict.IGNORE);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isSuccess(
               resultSet -> {
                 Iterator<Row> rows = resultSet.currentPage().iterator();
@@ -208,6 +269,25 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
                 ExecutionInfo executionInfo = resultSet.getExecutionInfo();
                 assertThat(executionInfo.getCoordinator()).isEqualTo(node1);
                 assertThat(executionInfo.getErrors()).hasSize(0);
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.errorMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        DefaultNodeMetric.IGNORES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.ignoreMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
               });
     }
   }
@@ -215,30 +295,45 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
   @Test
   @UseDataProvider("failureAndIdempotent")
   public void should_rethrow_error_if_idempotent_and_retry_policy_decides_so(
-      FailureScenario failureScenario, boolean defaultIdempotence, SimpleStatement statement) {
+      FailureScenario failureScenario, boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     failureScenario.mockRequestError(harnessBuilder, node1);
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
 
-      failureScenario.mockRetryPolicyDecision(
-          harness.getContext().retryPolicy(), RetryDecision.RETHROW);
+      failureScenario.mockRetryPolicyVerdict(
+          harness.getContext().getRetryPolicy(anyString()), RetryVerdict.RETHROW);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(
-              error -> assertThat(error).isInstanceOf(failureScenario.expectedExceptionClass));
+              error -> {
+                assertThat(error).isInstanceOf(failureScenario.expectedExceptionClass);
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.errorMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
+              });
     }
   }
 
   @Test
   @UseDataProvider("failureAndNotIdempotent")
   public void should_rethrow_error_if_not_idempotent_and_error_unsafe_or_policy_rethrows(
-      FailureScenario failureScenario, boolean defaultIdempotence, SimpleStatement statement) {
+      FailureScenario failureScenario, boolean defaultIdempotence, Statement<?> statement) {
 
     // For two of the possible exceptions, the retry policy is called even if the statement is not
     // idempotent
@@ -254,22 +349,35 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
 
       if (shouldCallRetryPolicy) {
-        failureScenario.mockRetryPolicyDecision(
-            harness.getContext().retryPolicy(), RetryDecision.RETHROW);
+        failureScenario.mockRetryPolicyVerdict(
+            harness.getContext().getRetryPolicy(anyString()), RetryVerdict.RETHROW);
       }
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(
               error -> {
                 assertThat(error).isInstanceOf(failureScenario.expectedExceptionClass);
                 // When non idempotent, the policy is bypassed completely:
                 if (!shouldCallRetryPolicy) {
-                  Mockito.verifyNoMoreInteractions(harness.getContext().retryPolicy());
+                  verifyNoMoreInteractions(harness.getContext().getRetryPolicy(anyString()));
                 }
+
+                verify(nodeMetricUpdater1)
+                    .incrementCounter(
+                        failureScenario.errorMetric, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+                verify(nodeMetricUpdater1, atMost(1))
+                    .updateTimer(
+                        eq(DefaultNodeMetric.CQL_MESSAGES),
+                        eq(DriverExecutionProfile.DEFAULT_NAME),
+                        anyLong(),
+                        eq(TimeUnit.NANOSECONDS));
+                verifyNoMoreInteractions(nodeMetricUpdater1);
               });
     }
   }
@@ -280,20 +388,34 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
    */
   private abstract static class FailureScenario {
     private final Class<? extends Throwable> expectedExceptionClass;
+    final DefaultNodeMetric errorMetric;
+    final DefaultNodeMetric retryMetric;
+    final DefaultNodeMetric ignoreMetric;
 
-    protected FailureScenario(Class<? extends Throwable> expectedExceptionClass) {
+    protected FailureScenario(
+        Class<? extends Throwable> expectedExceptionClass,
+        DefaultNodeMetric errorMetric,
+        DefaultNodeMetric retryMetric,
+        DefaultNodeMetric ignoreMetric) {
       this.expectedExceptionClass = expectedExceptionClass;
+      this.errorMetric = errorMetric;
+      this.retryMetric = retryMetric;
+      this.ignoreMetric = ignoreMetric;
     }
 
     abstract void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node);
 
-    abstract void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision);
+    abstract void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict);
   }
 
   @DataProvider
   public static Object[][] failure() {
     return TestDataProviders.fromList(
-        new FailureScenario(ReadTimeoutException.class) {
+        new FailureScenario(
+            ReadTimeoutException.class,
+            DefaultNodeMetric.READ_TIMEOUTS,
+            DefaultNodeMetric.RETRIES_ON_READ_TIMEOUT,
+            DefaultNodeMetric.IGNORES_ON_READ_TIMEOUT) {
           @Override
           public void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node) {
             builder.withResponse(
@@ -304,19 +426,22 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
           }
 
           @Override
-          public void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision) {
-            Mockito.when(
-                    policy.onReadTimeout(
-                        any(SimpleStatement.class),
-                        eq(ConsistencyLevel.LOCAL_ONE),
-                        eq(2),
-                        eq(1),
-                        eq(true),
-                        eq(0)))
-                .thenReturn(decision);
+          public void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict) {
+            when(policy.onReadTimeoutVerdict(
+                    any(Statement.class),
+                    eq(DefaultConsistencyLevel.LOCAL_ONE),
+                    eq(2),
+                    eq(1),
+                    eq(true),
+                    eq(0)))
+                .thenReturn(verdict);
           }
         },
-        new FailureScenario(WriteTimeoutException.class) {
+        new FailureScenario(
+            WriteTimeoutException.class,
+            DefaultNodeMetric.WRITE_TIMEOUTS,
+            DefaultNodeMetric.RETRIES_ON_WRITE_TIMEOUT,
+            DefaultNodeMetric.IGNORES_ON_WRITE_TIMEOUT) {
           @Override
           public void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node) {
             builder.withResponse(
@@ -331,19 +456,22 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
           }
 
           @Override
-          public void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision) {
-            Mockito.when(
-                    policy.onWriteTimeout(
-                        any(SimpleStatement.class),
-                        eq(ConsistencyLevel.LOCAL_ONE),
-                        eq(WriteType.SIMPLE),
-                        eq(2),
-                        eq(1),
-                        eq(0)))
-                .thenReturn(decision);
+          public void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict) {
+            when(policy.onWriteTimeoutVerdict(
+                    any(Statement.class),
+                    eq(DefaultConsistencyLevel.LOCAL_ONE),
+                    eq(DefaultWriteType.SIMPLE),
+                    eq(2),
+                    eq(1),
+                    eq(0)))
+                .thenReturn(verdict);
           }
         },
-        new FailureScenario(UnavailableException.class) {
+        new FailureScenario(
+            UnavailableException.class,
+            DefaultNodeMetric.UNAVAILABLES,
+            DefaultNodeMetric.RETRIES_ON_UNAVAILABLE,
+            DefaultNodeMetric.IGNORES_ON_UNAVAILABLE) {
           @Override
           public void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node) {
             builder.withResponse(
@@ -354,18 +482,21 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
           }
 
           @Override
-          public void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision) {
-            Mockito.when(
-                    policy.onUnavailable(
-                        any(SimpleStatement.class),
-                        eq(ConsistencyLevel.LOCAL_ONE),
-                        eq(2),
-                        eq(1),
-                        eq(0)))
-                .thenReturn(decision);
+          public void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict) {
+            when(policy.onUnavailableVerdict(
+                    any(Statement.class),
+                    eq(DefaultConsistencyLevel.LOCAL_ONE),
+                    eq(2),
+                    eq(1),
+                    eq(0)))
+                .thenReturn(verdict);
           }
         },
-        new FailureScenario(ServerError.class) {
+        new FailureScenario(
+            ServerError.class,
+            DefaultNodeMetric.OTHER_ERRORS,
+            DefaultNodeMetric.RETRIES_ON_OTHER_ERROR,
+            DefaultNodeMetric.IGNORES_ON_OTHER_ERROR) {
           @Override
           public void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node) {
             builder.withResponse(
@@ -375,25 +506,26 @@ public class CqlRequestHandlerRetryTest extends CqlRequestHandlerTestBase {
           }
 
           @Override
-          public void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision) {
-            Mockito.when(
-                    policy.onErrorResponse(
-                        any(SimpleStatement.class), any(ServerError.class), eq(0)))
-                .thenReturn(decision);
+          public void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict) {
+            when(policy.onErrorResponseVerdict(any(Statement.class), any(ServerError.class), eq(0)))
+                .thenReturn(verdict);
           }
         },
-        new FailureScenario(HeartbeatException.class) {
+        new FailureScenario(
+            HeartbeatException.class,
+            DefaultNodeMetric.ABORTED_REQUESTS,
+            DefaultNodeMetric.RETRIES_ON_ABORTED,
+            DefaultNodeMetric.IGNORES_ON_ABORTED) {
           @Override
           public void mockRequestError(RequestHandlerTestHarness.Builder builder, Node node) {
-            builder.withResponseFailure(node, Mockito.mock(HeartbeatException.class));
+            builder.withResponseFailure(node, mock(HeartbeatException.class));
           }
 
           @Override
-          public void mockRetryPolicyDecision(RetryPolicy policy, RetryDecision decision) {
-            Mockito.when(
-                    policy.onRequestAborted(
-                        any(SimpleStatement.class), any(HeartbeatException.class), eq(0)))
-                .thenReturn(decision);
+          public void mockRetryPolicyVerdict(RetryPolicy policy, RetryVerdict verdict) {
+            when(policy.onRequestAbortedVerdict(
+                    any(Statement.class), any(HeartbeatException.class), eq(0)))
+                .thenReturn(verdict);
           }
         });
   }

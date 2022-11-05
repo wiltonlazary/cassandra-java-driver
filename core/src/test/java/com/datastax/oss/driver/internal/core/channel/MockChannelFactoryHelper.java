@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,28 +15,31 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
-import com.google.common.collect.ListMultimap;
-import com.google.common.collect.MultimapBuilder;
-import com.google.common.collect.Sets;
-import java.net.SocketAddress;
+import com.datastax.oss.driver.shaded.guava.common.collect.ListMultimap;
+import com.datastax.oss.driver.shaded.guava.common.collect.MultimapBuilder;
+import com.datastax.oss.driver.shaded.guava.common.collect.Sets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
-import org.mockito.Mockito;
 import org.mockito.internal.util.MockUtil;
 import org.mockito.stubbing.OngoingStubbing;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.timeout;
 
 /**
  * Helper class to set up and verify a sequence of invocations on a ChannelFactory mock.
@@ -45,9 +48,11 @@ import static org.mockito.Mockito.timeout;
  * methods throughout the test to check that each call has been performed.
  *
  * <p>This class handles asynchronous calls to the thread factory, but it must be used from a single
- * thread (see {@link #waitForCalls(SocketAddress, int)}).
+ * thread (see {@link #waitForCalls(Node, int)}).
  */
 public class MockChannelFactoryHelper {
+
+  private static final int CONNECT_TIMEOUT_MILLIS = 500;
 
   public static Builder builder(ChannelFactory channelFactory) {
     return new Builder(channelFactory);
@@ -56,15 +61,15 @@ public class MockChannelFactoryHelper {
   private final ChannelFactory channelFactory;
   private final InOrder inOrder;
   // If waitForCalls sees more invocations than expected, the difference is stored here
-  private final Map<SocketAddress, Integer> previous = new HashMap<>();
+  private final Map<Node, Integer> previous = new HashMap<>();
 
   public MockChannelFactoryHelper(ChannelFactory channelFactory) {
     this.channelFactory = channelFactory;
-    this.inOrder = Mockito.inOrder(channelFactory);
+    this.inOrder = inOrder(channelFactory);
   }
 
-  public void waitForCall(SocketAddress address) {
-    waitForCalls(address, 1);
+  public void waitForCall(Node node) {
+    waitForCalls(node, 1);
   }
 
   /**
@@ -74,10 +79,10 @@ public class MockChannelFactoryHelper {
    * expected when this method is called. If so, the extra calls are stored and stored and will be
    * taken into account next time.
    */
-  public void waitForCalls(SocketAddress address, int expected) {
-    int fromLastTime = previous.getOrDefault(address, 0);
+  public void waitForCalls(Node node, int expected) {
+    int fromLastTime = previous.getOrDefault(node, 0);
     if (fromLastTime >= expected) {
-      previous.put(address, fromLastTime - expected);
+      previous.put(node, fromLastTime - expected);
       return;
     }
     expected -= fromLastTime;
@@ -87,20 +92,20 @@ public class MockChannelFactoryHelper {
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
     inOrder
-        .verify(channelFactory, timeout(100).atLeast(expected))
-        .connect(eq(address), optionsCaptor.capture());
+        .verify(channelFactory, timeout(CONNECT_TIMEOUT_MILLIS).atLeast(expected))
+        .connect(eq(node), optionsCaptor.capture());
     int actual = optionsCaptor.getAllValues().size();
 
     int extras = actual - expected;
     if (extras > 0) {
-      previous.compute(address, (k, v) -> (v == null) ? extras : v + extras);
+      previous.compute(node, (k, v) -> (v == null) ? extras : v + extras);
     }
   }
 
   public void verifyNoMoreCalls() {
     inOrder
-        .verify(channelFactory, timeout(100).times(0))
-        .connect(any(SocketAddress.class), any(DriverChannelOptions.class));
+        .verify(channelFactory, timeout(CONNECT_TIMEOUT_MILLIS).times(0))
+        .connect(any(Node.class), any(DriverChannelOptions.class));
 
     Set<Integer> counts = Sets.newHashSet(previous.values());
     if (!counts.isEmpty()) {
@@ -110,32 +115,32 @@ public class MockChannelFactoryHelper {
 
   public static class Builder {
     private final ChannelFactory channelFactory;
-    private final ListMultimap<SocketAddress, Object> invocations =
+    private final ListMultimap<Node, Object> invocations =
         MultimapBuilder.hashKeys().arrayListValues().build();
 
     public Builder(ChannelFactory channelFactory) {
-      assertThat(MockUtil.isMock(channelFactory)).isTrue().as("expected a mock");
-      Mockito.verifyZeroInteractions(channelFactory);
+      assertThat(MockUtil.isMock(channelFactory)).as("expected a mock").isTrue();
+      verifyZeroInteractions(channelFactory);
       this.channelFactory = channelFactory;
     }
 
-    public Builder success(SocketAddress address, DriverChannel channel) {
-      invocations.put(address, channel);
+    public Builder success(Node node, DriverChannel channel) {
+      invocations.put(node, channel);
       return this;
     }
 
-    public Builder failure(SocketAddress address, String error) {
-      invocations.put(address, new Exception(error));
+    public Builder failure(Node node, String error) {
+      invocations.put(node, new Exception(error));
       return this;
     }
 
-    public Builder failure(SocketAddress address, Throwable error) {
-      invocations.put(address, error);
+    public Builder failure(Node node, Throwable error) {
+      invocations.put(node, error);
       return this;
     }
 
-    public Builder pending(SocketAddress address, CompletableFuture<DriverChannel> future) {
-      invocations.put(address, future);
+    public Builder pending(Node node, CompletableFuture<DriverChannel> future) {
+      invocations.put(node, future);
       return this;
     }
 
@@ -145,9 +150,9 @@ public class MockChannelFactoryHelper {
     }
 
     private void stub() {
-      for (SocketAddress address : invocations.keySet()) {
-        LinkedList<CompletionStage<DriverChannel>> results = new LinkedList<>();
-        for (Object object : invocations.get(address)) {
+      for (Node node : invocations.keySet()) {
+        Deque<CompletionStage<DriverChannel>> results = new ArrayDeque<>();
+        for (Object object : invocations.get(node)) {
           if (object instanceof DriverChannel) {
             results.add(CompletableFuture.completedFuture(((DriverChannel) object)));
           } else if (object instanceof Throwable) {
@@ -163,7 +168,7 @@ public class MockChannelFactoryHelper {
         if (results.size() > 0) {
           CompletionStage<DriverChannel> first = results.poll();
           OngoingStubbing<CompletionStage<DriverChannel>> ongoingStubbing =
-              Mockito.when(channelFactory.connect(eq(address), any(DriverChannelOptions.class)))
+              when(channelFactory.connect(eq(node), any(DriverChannelOptions.class)))
                   .thenReturn(first);
           for (CompletionStage<DriverChannel> result : results) {
             ongoingStubbing.thenReturn(result);

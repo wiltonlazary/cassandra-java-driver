@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,46 +21,62 @@ import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
 import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import com.datastax.oss.protocol.internal.util.Bytes;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
+import net.jcip.annotations.ThreadSafe;
 
+/**
+ * A codec that maps the CQL type {@code blob} to the Java type {@link ByteBuffer}.
+ *
+ * <p>If you are looking for a codec mapping the CQL type {@code blob} to the Java type {@code
+ * byte[]}, you should use {@link SimpleBlobCodec} instead.
+ */
+@ThreadSafe
 public class BlobCodec implements TypeCodec<ByteBuffer> {
+  @NonNull
   @Override
   public GenericType<ByteBuffer> getJavaType() {
     return GenericType.BYTE_BUFFER;
   }
 
+  @NonNull
   @Override
   public DataType getCqlType() {
     return DataTypes.BLOB;
   }
 
   @Override
-  public boolean accepts(Object value) {
+  public boolean accepts(@NonNull Object value) {
     return value instanceof ByteBuffer;
   }
 
   @Override
-  public boolean accepts(Class<?> javaClass) {
-    return ByteBuffer.class.isAssignableFrom(javaClass);
+  public boolean accepts(@NonNull Class<?> javaClass) {
+    return ByteBuffer.class.equals(javaClass);
   }
 
+  @Nullable
   @Override
-  public ByteBuffer encode(ByteBuffer value, ProtocolVersion protocolVersion) {
+  public ByteBuffer encode(@Nullable ByteBuffer value, @NonNull ProtocolVersion protocolVersion) {
     return (value == null) ? null : value.duplicate();
   }
 
+  @Nullable
   @Override
-  public ByteBuffer decode(ByteBuffer bytes, ProtocolVersion protocolVersion) {
+  public ByteBuffer decode(@Nullable ByteBuffer bytes, @NonNull ProtocolVersion protocolVersion) {
     return (bytes == null) ? null : bytes.duplicate();
   }
 
+  @NonNull
   @Override
-  public String format(ByteBuffer value) {
+  public String format(@Nullable ByteBuffer value) {
     return (value == null) ? "NULL" : Bytes.toHexString(value);
   }
 
+  @Nullable
   @Override
-  public ByteBuffer parse(String value) {
+  public ByteBuffer parse(@Nullable String value) {
     return (value == null || value.isEmpty() || value.equalsIgnoreCase("NULL"))
         ? null
         : Bytes.fromHexString(value);

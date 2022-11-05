@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,49 +18,61 @@ package com.datastax.oss.driver.api.core.servererrors;
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.ConsistencyLevel;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
 import com.datastax.oss.driver.api.core.session.Request;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * A server-side timeout during a read query.
  *
- * <p>This exception is processed by {@link RetryPolicy#onReadTimeout(Request, ConsistencyLevel,
- * int, int, boolean, int)}, which will decide if it is rethrown directly to the client or if the
- * request should be retried. If all other tried nodes also fail, this exception will appear in the
- * {@link AllNodesFailedException} thrown to the client.
+ * <p>This exception is processed by {@link RetryPolicy#onReadTimeoutVerdict(Request,
+ * ConsistencyLevel, int, int, boolean, int)}, which will decide if it is rethrown directly to the
+ * client or if the request should be retried. If all other tried nodes also fail, this exception
+ * will appear in the {@link AllNodesFailedException} thrown to the client.
  */
 public class ReadTimeoutException extends QueryConsistencyException {
 
   private final boolean dataPresent;
 
   public ReadTimeoutException(
-      Node coordinator,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull ConsistencyLevel consistencyLevel,
       int received,
       int blockFor,
       boolean dataPresent) {
     this(
         coordinator,
         String.format(
-            "Cassandra timeout during read query at consistency %s (%s)",
+            "Cassandra timeout during read query at consistency %s (%s). "
+                + "In case this was generated during read repair, the consistency level is not representative of the actual consistency.",
             consistencyLevel, formatDetails(received, blockFor, dataPresent)),
         consistencyLevel,
         received,
         blockFor,
         dataPresent,
+        null,
         false);
   }
 
   private ReadTimeoutException(
-      Node coordinator,
-      String message,
-      ConsistencyLevel consistencyLevel,
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @NonNull ConsistencyLevel consistencyLevel,
       int received,
       int blockFor,
       boolean dataPresent,
+      ExecutionInfo executionInfo,
       boolean writableStackTrace) {
-    super(coordinator, message, consistencyLevel, received, blockFor, writableStackTrace);
+    super(
+        coordinator,
+        message,
+        consistencyLevel,
+        received,
+        blockFor,
+        executionInfo,
+        writableStackTrace);
     this.dataPresent = dataPresent;
   }
 
@@ -87,6 +99,7 @@ public class ReadTimeoutException extends QueryConsistencyException {
     return dataPresent;
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
     return new ReadTimeoutException(
@@ -96,6 +109,7 @@ public class ReadTimeoutException extends QueryConsistencyException {
         getReceived(),
         getBlockFor(),
         dataPresent,
+        getExecutionInfo(),
         true);
   }
 }

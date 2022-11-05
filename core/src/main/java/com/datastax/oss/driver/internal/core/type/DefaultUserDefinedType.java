@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,14 +22,18 @@ import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.UserDefinedType;
 import com.datastax.oss.driver.internal.core.data.DefaultUdtValue;
 import com.datastax.oss.driver.internal.core.data.IdentifierIndex;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.Serializable;
 import java.util.List;
 import java.util.Objects;
+import net.jcip.annotations.Immutable;
 
-public class DefaultUserDefinedType implements UserDefinedType {
+@Immutable
+public class DefaultUserDefinedType implements UserDefinedType, Serializable {
 
   private static final long serialVersionUID = 1;
 
@@ -37,6 +41,10 @@ public class DefaultUserDefinedType implements UserDefinedType {
   private final CqlIdentifier keyspace;
   /** @serial */
   private final CqlIdentifier name;
+
+  // Data types are only [de]serialized as part of a row, frozenness doesn't matter in that context
+  private final transient boolean frozen;
+
   /** @serial */
   private final List<CqlIdentifier> fieldNames;
   /** @serial */
@@ -46,20 +54,23 @@ public class DefaultUserDefinedType implements UserDefinedType {
   private transient volatile AttachmentPoint attachmentPoint;
 
   public DefaultUserDefinedType(
-      CqlIdentifier keyspace,
-      CqlIdentifier name,
+      @NonNull CqlIdentifier keyspace,
+      @NonNull CqlIdentifier name,
+      boolean frozen,
       List<CqlIdentifier> fieldNames,
-      List<DataType> fieldTypes,
-      AttachmentPoint attachmentPoint) {
+      @NonNull List<DataType> fieldTypes,
+      @NonNull AttachmentPoint attachmentPoint) {
     Preconditions.checkNotNull(keyspace);
     Preconditions.checkNotNull(name);
+    Preconditions.checkNotNull(fieldNames);
+    Preconditions.checkNotNull(fieldTypes);
+    Preconditions.checkArgument(fieldNames.size() > 0, "Field names list can't be null or empty");
     Preconditions.checkArgument(
-        fieldNames != null && fieldNames.size() > 0, "Field names list can't be null or empty");
-    Preconditions.checkArgument(
-        fieldTypes != null && fieldTypes.size() == fieldNames.size(),
+        fieldTypes.size() == fieldNames.size(),
         "There should be the same number of field names and types");
     this.keyspace = keyspace;
     this.name = name;
+    this.frozen = frozen;
     this.fieldNames = ImmutableList.copyOf(fieldNames);
     this.fieldTypes = ImmutableList.copyOf(fieldTypes);
     this.index = new IdentifierIndex(this.fieldNames);
@@ -67,46 +78,84 @@ public class DefaultUserDefinedType implements UserDefinedType {
   }
 
   public DefaultUserDefinedType(
-      CqlIdentifier keyspace,
-      CqlIdentifier name,
-      List<CqlIdentifier> fieldNames,
-      List<DataType> fieldTypes) {
-    this(keyspace, name, fieldNames, fieldTypes, AttachmentPoint.NONE);
+      @NonNull CqlIdentifier keyspace,
+      @NonNull CqlIdentifier name,
+      boolean frozen,
+      @NonNull List<CqlIdentifier> fieldNames,
+      @NonNull List<DataType> fieldTypes) {
+    this(keyspace, name, frozen, fieldNames, fieldTypes, AttachmentPoint.NONE);
   }
 
+  @NonNull
   @Override
   public CqlIdentifier getKeyspace() {
     return keyspace;
   }
 
+  @NonNull
   @Override
   public CqlIdentifier getName() {
     return name;
   }
 
   @Override
+  public boolean isFrozen() {
+    return frozen;
+  }
+
+  @NonNull
+  @Override
   public List<CqlIdentifier> getFieldNames() {
     return fieldNames;
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(CqlIdentifier id) {
+  public List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    return index.allIndicesOf(id);
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull CqlIdentifier id) {
     return index.firstIndexOf(id);
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(String name) {
+  public List<Integer> allIndicesOf(@NonNull String name) {
+    return index.allIndicesOf(name);
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull String name) {
     return index.firstIndexOf(name);
   }
 
+  @NonNull
   @Override
   public List<DataType> getFieldTypes() {
     return fieldTypes;
   }
 
+  @NonNull
+  @Override
+  public UserDefinedType copy(boolean newFrozen) {
+    return (newFrozen == frozen)
+        ? this
+        : new DefaultUserDefinedType(
+            keyspace, name, newFrozen, fieldNames, fieldTypes, attachmentPoint);
+  }
+
+  @NonNull
   @Override
   public UdtValue newValue() {
     return new DefaultUdtValue(this);
+  }
+
+  @NonNull
+  @Override
+  public UdtValue newValue(@NonNull Object... fields) {
+    return new DefaultUdtValue(this, fields);
   }
 
   @Override
@@ -115,13 +164,14 @@ public class DefaultUserDefinedType implements UserDefinedType {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     this.attachmentPoint = attachmentPoint;
     for (DataType fieldType : fieldTypes) {
       fieldType.attach(attachmentPoint);
     }
   }
 
+  @NonNull
   @Override
   public AttachmentPoint getAttachmentPoint() {
     return attachmentPoint;
@@ -133,6 +183,7 @@ public class DefaultUserDefinedType implements UserDefinedType {
       return true;
     } else if (other instanceof UserDefinedType) {
       UserDefinedType that = (UserDefinedType) other;
+      // frozen is ignored in comparisons
       return this.keyspace.equals(that.getKeyspace())
           && this.name.equals(that.getName())
           && this.fieldNames.equals(that.getFieldNames())
@@ -149,7 +200,7 @@ public class DefaultUserDefinedType implements UserDefinedType {
 
   @Override
   public String toString() {
-    return "UDT(" + keyspace.asPrettyCql() + "." + name.asPrettyCql() + ")";
+    return "UDT(" + keyspace.asCql(true) + "." + name.asCql(true) + ")";
   }
 
   private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {

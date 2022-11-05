@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,8 +15,10 @@
  */
 package com.datastax.oss.driver.api.core.auth;
 
+import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.nio.ByteBuffer;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 /**
@@ -32,7 +34,14 @@ public interface SyncAuthenticator extends Authenticator {
    *
    * <p>{@link #initialResponse()} calls this and wraps the result in an immediately completed
    * future.
+   *
+   * @return The initial response to send to the server (which may be {@code null}). Note that, if
+   *     the returned byte buffer is writable, the driver will <b>clear its contents</b> immediately
+   *     after use (to avoid keeping sensitive information in memory); do not reuse the same buffer
+   *     across multiple invocations. Alternatively, if the contents are not sensitive, you can make
+   *     the buffer {@linkplain ByteBuffer#asReadOnlyBuffer() read-only} and safely reuse it.
    */
+  @Nullable
   ByteBuffer initialResponseSync();
 
   /**
@@ -40,8 +49,17 @@ public interface SyncAuthenticator extends Authenticator {
    *
    * <p>{@link #evaluateChallenge(ByteBuffer)} calls this and wraps the result in an immediately
    * completed future.
+   *
+   * @param challenge the server's SASL challenge; may be {@code null}.
+   * @return The updated SASL token (which may be {@code null} to indicate the client requires no
+   *     further action). Note that, if the returned byte buffer is writable, the driver will
+   *     <b>clear its contents</b> immediately after use (to avoid keeping sensitive information in
+   *     memory); do not reuse the same buffer across multiple invocations. Alternatively, if the
+   *     contents are not sensitive, you can make the buffer {@linkplain
+   *     ByteBuffer#asReadOnlyBuffer() read-only} and safely reuse it.
    */
-  ByteBuffer evaluateChallengeSync(ByteBuffer challenge);
+  @Nullable
+  ByteBuffer evaluateChallengeSync(@Nullable ByteBuffer challenge);
 
   /**
    * Called when authentication is successful with the last information optionally sent by the
@@ -49,22 +67,32 @@ public interface SyncAuthenticator extends Authenticator {
    *
    * <p>{@link #onAuthenticationSuccess(ByteBuffer)} calls this, and then returns an immediately
    * completed future.
+   *
+   * @param token the information sent by the server with the authentication successful message.
+   *     This will be {@code null} if the server sends no particular information on authentication
+   *     success.
    */
-  void onAuthenticationSuccessSync(ByteBuffer token);
+  void onAuthenticationSuccessSync(@Nullable ByteBuffer token);
 
+  @NonNull
   @Override
   default CompletionStage<ByteBuffer> initialResponse() {
-    return CompletableFuture.completedFuture(initialResponseSync());
+    return CompletableFutures.wrap(this::initialResponseSync);
   }
 
+  @NonNull
   @Override
-  default CompletionStage<ByteBuffer> evaluateChallenge(ByteBuffer challenge) {
-    return CompletableFuture.completedFuture(evaluateChallengeSync(challenge));
+  default CompletionStage<ByteBuffer> evaluateChallenge(@Nullable ByteBuffer challenge) {
+    return CompletableFutures.wrap(() -> evaluateChallengeSync(challenge));
   }
 
+  @NonNull
   @Override
-  default CompletionStage<Void> onAuthenticationSuccess(ByteBuffer token) {
-    onAuthenticationSuccessSync(token);
-    return CompletableFuture.completedFuture(null);
+  default CompletionStage<Void> onAuthenticationSuccess(@Nullable ByteBuffer token) {
+    return CompletableFutures.wrap(
+        () -> {
+          onAuthenticationSuccessSync(token);
+          return null;
+        });
   }
 }

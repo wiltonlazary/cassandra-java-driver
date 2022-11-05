@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,64 +15,131 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.datastax.oss.driver.api.core.metadata.Node;
-import com.google.common.collect.ImmutableMap;
-import java.net.InetSocketAddress;
-import java.util.Map;
-import org.junit.Test;
-
 import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 
+import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.api.core.uuid.Uuids;
+import com.datastax.oss.driver.internal.core.channel.ChannelFactory;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metrics.MetricsFactory;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
+import java.net.InetSocketAddress;
+import java.util.Collections;
+import java.util.Map;
+import java.util.UUID;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+
+@RunWith(MockitoJUnitRunner.class)
 public class AddNodeRefreshTest {
-  private static final InetSocketAddress ADDRESS1 = new InetSocketAddress("127.0.0.1", 9042);
-  private static final InetSocketAddress ADDRESS2 = new InetSocketAddress("127.0.0.2", 9042);
 
-  private static final DefaultNode node1 = new DefaultNode(ADDRESS1);
+  @Mock private InternalDriverContext context;
+  @Mock protected MetricsFactory metricsFactory;
+  @Mock private ChannelFactory channelFactory;
+
+  private DefaultNode node1;
+
+  @Before
+  public void setup() {
+    when(context.getMetricsFactory()).thenReturn(metricsFactory);
+    when(context.getChannelFactory()).thenReturn(channelFactory);
+    node1 = TestNodeFactory.newNode(1, context);
+  }
 
   @Test
   public void should_add_new_node() {
     // Given
-    DefaultMetadata oldMetadata = new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1));
+    DefaultMetadata oldMetadata =
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1), Collections.emptyMap(), null, null);
+    UUID newHostId = Uuids.random();
+    DefaultEndPoint newEndPoint = TestNodeFactory.newEndPoint(2);
+    UUID newSchemaVersion = Uuids.random();
     DefaultNodeInfo newNodeInfo =
         DefaultNodeInfo.builder()
-            .withConnectAddress(ADDRESS2)
+            .withHostId(newHostId)
+            .withEndPoint(newEndPoint)
             .withDatacenter("dc1")
             .withRack("rack2")
+            .withSchemaVersion(newSchemaVersion)
             .build();
-    AddNodeRefresh refresh = new AddNodeRefresh(oldMetadata, newNodeInfo, "test");
+    AddNodeRefresh refresh = new AddNodeRefresh(newNodeInfo);
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    Map<InetSocketAddress, Node> newNodes = refresh.newMetadata.getNodes();
-    assertThat(newNodes).containsOnlyKeys(ADDRESS1, ADDRESS2);
-    Node node2 = newNodes.get(ADDRESS2);
+    Map<UUID, Node> newNodes = result.newMetadata.getNodes();
+    assertThat(newNodes).containsOnlyKeys(node1.getHostId(), newHostId);
+    Node node2 = newNodes.get(newHostId);
+    assertThat(node2.getEndPoint()).isEqualTo(newEndPoint);
     assertThat(node2.getDatacenter()).isEqualTo("dc1");
     assertThat(node2.getRack()).isEqualTo("rack2");
-    assertThat(refresh.events).containsExactly(NodeStateEvent.added((DefaultNode) node2));
+    assertThat(node2.getHostId()).isEqualTo(newHostId);
+    assertThat(node2.getSchemaVersion()).isEqualTo(newSchemaVersion);
+    assertThat(result.events).containsExactly(NodeStateEvent.added((DefaultNode) node2));
   }
 
   @Test
-  public void should_not_add_existing_node() {
+  public void should_not_add_existing_node_with_same_id_and_endpoint() {
     // Given
-    DefaultMetadata oldMetadata = new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1));
+    DefaultMetadata oldMetadata =
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1), Collections.emptyMap(), null, null);
     DefaultNodeInfo newNodeInfo =
         DefaultNodeInfo.builder()
-            .withConnectAddress(ADDRESS1)
+            .withHostId(node1.getHostId())
+            .withEndPoint(node1.getEndPoint())
             .withDatacenter("dc1")
             .withRack("rack2")
             .build();
-    AddNodeRefresh refresh = new AddNodeRefresh(oldMetadata, newNodeInfo, "test");
+    AddNodeRefresh refresh = new AddNodeRefresh(newNodeInfo);
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    assertThat(refresh.newMetadata.getNodes()).containsOnlyKeys(ADDRESS1);
+    assertThat(result.newMetadata.getNodes()).containsOnlyKeys(node1.getHostId());
     // Info is not copied over:
     assertThat(node1.getDatacenter()).isNull();
     assertThat(node1.getRack()).isNull();
-    assertThat(refresh.events).isEmpty();
+    assertThat(result.events).isEmpty();
+  }
+
+  @Test
+  public void should_add_existing_node_with_same_id_but_different_endpoint() {
+    // Given
+    DefaultMetadata oldMetadata =
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1), Collections.emptyMap(), null, null);
+    DefaultEndPoint newEndPoint = TestNodeFactory.newEndPoint(2);
+    InetSocketAddress newBroadcastRpcAddress = newEndPoint.resolve();
+    UUID newSchemaVersion = Uuids.random();
+    DefaultNodeInfo newNodeInfo =
+        DefaultNodeInfo.builder()
+            .withHostId(node1.getHostId())
+            .withEndPoint(newEndPoint)
+            .withDatacenter("dc1")
+            .withRack("rack2")
+            .withSchemaVersion(newSchemaVersion)
+            .withBroadcastRpcAddress(newBroadcastRpcAddress)
+            .build();
+    AddNodeRefresh refresh = new AddNodeRefresh(newNodeInfo);
+
+    // When
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
+
+    // Then
+    Map<UUID, Node> newNodes = result.newMetadata.getNodes();
+    assertThat(newNodes).hasSize(1).containsEntry(node1.getHostId(), node1);
+    assertThat(node1.getEndPoint()).isEqualTo(newEndPoint);
+    assertThat(node1.getDatacenter()).isEqualTo("dc1");
+    assertThat(node1.getRack()).isEqualTo("rack2");
+    assertThat(node1.getSchemaVersion()).isEqualTo(newSchemaVersion);
+    assertThat(result.events).containsExactly(TopologyEvent.suggestUp(newBroadcastRpcAddress));
   }
 }

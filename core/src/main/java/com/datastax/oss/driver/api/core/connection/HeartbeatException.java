@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,11 @@
 package com.datastax.oss.driver.api.core.connection;
 
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
 import com.datastax.oss.driver.api.core.session.Request;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.net.SocketAddress;
 
 /**
@@ -25,25 +28,33 @@ import java.net.SocketAddress;
  *
  * <p>Heartbeat queries are sent automatically on idle connections, to ensure that they are still
  * alive. If a heartbeat query fails, the connection is closed, and all pending queries are aborted.
- * The exception will be passed to {@link RetryPolicy#onRequestAborted(Request, Throwable, int)},
- * which decides what to do next (the default policy retries the query on the next node).
+ * The exception will be passed to {@link RetryPolicy#onRequestAbortedVerdict(Request, Throwable,
+ * int)}, which decides what to do next (the default policy retries the query on the next node).
  */
 public class HeartbeatException extends DriverException {
 
   private final SocketAddress address;
 
-  public HeartbeatException(SocketAddress address, String message, Throwable cause) {
-    super(message, cause, true);
+  public HeartbeatException(
+      @NonNull SocketAddress address, @Nullable String message, @Nullable Throwable cause) {
+    this(address, message, null, cause);
+  }
+
+  public HeartbeatException(
+      SocketAddress address, String message, ExecutionInfo executionInfo, Throwable cause) {
+    super(message, executionInfo, cause, true);
     this.address = address;
   }
 
   /** The address of the node that encountered the error. */
+  @NonNull
   public SocketAddress getAddress() {
     return address;
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new HeartbeatException(address, getMessage(), getCause());
+    return new HeartbeatException(address, getMessage(), getExecutionInfo(), getCause());
   }
 }

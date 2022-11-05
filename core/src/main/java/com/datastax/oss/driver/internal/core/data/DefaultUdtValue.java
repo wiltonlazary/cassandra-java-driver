@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,22 +21,42 @@ import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.UserDefinedType;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
 import com.datastax.oss.protocol.internal.util.Bytes;
-import com.google.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Objects;
+import net.jcip.annotations.NotThreadSafe;
 
-public class DefaultUdtValue implements UdtValue {
+/**
+ * Implementation note: contrary to most GettableBy* and SettableBy* implementations, this class is
+ * mutable.
+ */
+@NotThreadSafe
+public class DefaultUdtValue implements UdtValue, Serializable {
 
   private static final long serialVersionUID = 1;
 
   private final UserDefinedType type;
   private final ByteBuffer[] values;
 
-  public DefaultUdtValue(UserDefinedType type) {
+  public DefaultUdtValue(@NonNull UserDefinedType type) {
     this(type, new ByteBuffer[type.getFieldTypes().size()]);
+  }
+
+  public DefaultUdtValue(@NonNull UserDefinedType type, @NonNull Object... values) {
+    this(
+        type,
+        ValuesHelper.encodeValues(
+            values,
+            type.getFieldTypes(),
+            type.getAttachmentPoint().getCodecRegistry(),
+            type.getAttachmentPoint().getProtocolVersion()));
   }
 
   private DefaultUdtValue(UserDefinedType type, ByteBuffer[] values) {
@@ -45,6 +65,7 @@ public class DefaultUdtValue implements UdtValue {
     this.values = values;
   }
 
+  @NonNull
   @Override
   public UserDefinedType getType() {
     return type;
@@ -55,16 +76,45 @@ public class DefaultUdtValue implements UdtValue {
     return values.length;
   }
 
+  @NonNull
   @Override
-  public int firstIndexOf(CqlIdentifier id) {
-    return type.firstIndexOf(id);
+  public List<Integer> allIndicesOf(@NonNull CqlIdentifier id) {
+    List<Integer> indices = type.allIndicesOf(id);
+    if (indices.isEmpty()) {
+      throw new IllegalArgumentException(id + " is not a field in this UDT");
+    }
+    return indices;
   }
 
   @Override
-  public int firstIndexOf(String name) {
-    return type.firstIndexOf(name);
+  public int firstIndexOf(@NonNull CqlIdentifier id) {
+    int indexOf = type.firstIndexOf(id);
+    if (indexOf == -1) {
+      throw new IllegalArgumentException(id + " is not a field in this UDT");
+    }
+    return indexOf;
   }
 
+  @NonNull
+  @Override
+  public List<Integer> allIndicesOf(@NonNull String name) {
+    List<Integer> indices = type.allIndicesOf(name);
+    if (indices.isEmpty()) {
+      throw new IllegalArgumentException(name + " is not a field in this UDT");
+    }
+    return indices;
+  }
+
+  @Override
+  public int firstIndexOf(@NonNull String name) {
+    int indexOf = type.firstIndexOf(name);
+    if (indexOf == -1) {
+      throw new IllegalArgumentException(name + " is not a field in this UDT");
+    }
+    return indexOf;
+  }
+
+  @NonNull
   @Override
   public DataType getType(int i) {
     return type.getFieldTypes().get(i);
@@ -75,20 +125,75 @@ public class DefaultUdtValue implements UdtValue {
     return values[i];
   }
 
+  @NonNull
   @Override
-  public UdtValue setBytesUnsafe(int i, ByteBuffer v) {
+  public UdtValue setBytesUnsafe(int i, @Nullable ByteBuffer v) {
     values[i] = v;
     return this;
   }
 
+  @NonNull
   @Override
   public CodecRegistry codecRegistry() {
-    return type.getAttachmentPoint().codecRegistry();
+    return type.getAttachmentPoint().getCodecRegistry();
+  }
+
+  @NonNull
+  @Override
+  public ProtocolVersion protocolVersion() {
+    return type.getAttachmentPoint().getProtocolVersion();
   }
 
   @Override
-  public ProtocolVersion protocolVersion() {
-    return type.getAttachmentPoint().protocolVersion();
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+
+    if (!(o instanceof UdtValue)) {
+      return false;
+    }
+    UdtValue that = (UdtValue) o;
+
+    if (!type.equals(that.getType())) {
+      return false;
+    }
+
+    for (int i = 0; i < values.length; i++) {
+
+      DataType innerThisType = type.getFieldTypes().get(i);
+      DataType innerThatType = that.getType().getFieldTypes().get(i);
+
+      Object thisValue =
+          this.codecRegistry()
+              .codecFor(innerThisType)
+              .decode(this.getBytesUnsafe(i), this.protocolVersion());
+      Object thatValue =
+          that.codecRegistry()
+              .codecFor(innerThatType)
+              .decode(that.getBytesUnsafe(i), that.protocolVersion());
+
+      if (!Objects.equals(thisValue, thatValue)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @Override
+  public int hashCode() {
+    int result = type.hashCode();
+    for (int i = 0; i < values.length; i++) {
+      DataType innerThisType = type.getFieldTypes().get(i);
+      Object thisValue =
+          this.codecRegistry()
+              .codecFor(innerThisType)
+              .decode(this.values[i], this.protocolVersion());
+      if (thisValue != null) {
+        result = 31 * result + thisValue.hashCode();
+      }
+    }
+    return result;
   }
 
   /**
@@ -99,7 +204,8 @@ public class DefaultUdtValue implements UdtValue {
     return new SerializationProxy(this);
   }
 
-  private void readObject(ObjectInputStream stream) throws InvalidObjectException {
+  private void readObject(@SuppressWarnings("unused") ObjectInputStream stream)
+      throws InvalidObjectException {
     // Should never be called since we serialized a proxy
     throw new InvalidObjectException("Proxy required");
   }

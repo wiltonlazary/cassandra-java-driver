@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 package com.datastax.oss.driver.internal.core.type.codec;
 
-import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
-import org.junit.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
+
+import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
+import com.datastax.oss.driver.api.core.type.reflect.GenericType;
+import org.junit.Test;
 
 public class CounterCodecTest extends CodecTestBase<Long> {
 
@@ -66,6 +67,27 @@ public class CounterCodecTest extends CodecTestBase<Long> {
 
   @Test(expected = IllegalArgumentException.class)
   public void should_fail_to_parse_if_out_of_range() {
-    parse(Long.toString(Long.MAX_VALUE) + "0");
+    parse(Long.MAX_VALUE + "0");
+  }
+
+  @Test
+  public void should_accept_generic_type() {
+    assertThat(codec.accepts(GenericType.of(Long.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(long.class))).isTrue();
+    assertThat(codec.accepts(GenericType.of(Integer.class))).isFalse();
+  }
+
+  @Test
+  public void should_accept_raw_type() {
+    assertThat(codec.accepts(Long.class)).isTrue();
+    assertThat(codec.accepts(long.class)).isTrue();
+    assertThat(codec.accepts(Integer.class)).isFalse();
+  }
+
+  @Test
+  public void should_accept_object() {
+    assertThat(codec.accepts(123L)).isTrue();
+    assertThat(codec.accepts(Long.MIN_VALUE)).isTrue();
+    assertThat(codec.accepts(Integer.MIN_VALUE)).isFalse();
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,42 +16,58 @@
 package com.datastax.oss.driver.internal.core.metadata;
 
 import com.datastax.oss.driver.api.core.metadata.Node;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.UUID;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+@ThreadSafe
 public class RemoveNodeRefresh extends NodesRefresh {
 
   private static final Logger LOG = LoggerFactory.getLogger(RemoveNodeRefresh.class);
 
-  @VisibleForTesting final InetSocketAddress toRemove;
+  @VisibleForTesting final InetSocketAddress broadcastRpcAddressToRemove;
 
-  RemoveNodeRefresh(DefaultMetadata current, InetSocketAddress toRemove, String logPrefix) {
-    super(current, logPrefix);
-    this.toRemove = toRemove;
+  RemoveNodeRefresh(InetSocketAddress broadcastRpcAddressToRemove) {
+    this.broadcastRpcAddressToRemove = broadcastRpcAddressToRemove;
   }
 
   @Override
-  protected Map<InetSocketAddress, Node> computeNewNodes() {
-    Map<InetSocketAddress, Node> oldNodes = oldMetadata.getNodes();
-    Node node = oldNodes.get(toRemove);
-    if (node == null) {
-      // Normally this should already be checked before calling MetadataManager, but it doesn't
-      // hurt to fail gracefully just in case
-      return null;
-    } else {
-      LOG.debug("[{}] Removing node {}", logPrefix, node);
-      events.add(NodeStateEvent.removed((DefaultNode) node));
-      ImmutableMap.Builder<InetSocketAddress, Node> newNodesBuilder = ImmutableMap.builder();
-      for (Map.Entry<InetSocketAddress, Node> entry : oldNodes.entrySet()) {
-        if (!entry.getKey().equals(toRemove)) {
-          newNodesBuilder.put(entry.getKey(), entry.getValue());
-        }
+  public Result compute(
+      DefaultMetadata oldMetadata, boolean tokenMapEnabled, InternalDriverContext context) {
+
+    String logPrefix = context.getSessionName();
+
+    Map<UUID, Node> oldNodes = oldMetadata.getNodes();
+
+    ImmutableMap.Builder<UUID, Node> newNodesBuilder = ImmutableMap.builder();
+    Node removedNode = null;
+    for (Node node : oldNodes.values()) {
+      if (node.getBroadcastRpcAddress().isPresent()
+          && node.getBroadcastRpcAddress().get().equals(broadcastRpcAddressToRemove)) {
+        removedNode = node;
+      } else {
+        assert node.getHostId() != null; // nodes in metadata.getNodes() always have their id set
+        newNodesBuilder.put(node.getHostId(), node);
       }
-      return newNodesBuilder.build();
+    }
+
+    if (removedNode == null) {
+      // This should never happen because we already check the event in NodeStateManager, but handle
+      // just in case.
+      LOG.debug("[{}] Couldn't find node {} to remove", logPrefix, broadcastRpcAddressToRemove);
+      return new Result(oldMetadata);
+    } else {
+      LOG.debug("[{}] Removing node {}", logPrefix, removedNode);
+      return new Result(
+          oldMetadata.withNodes(newNodesBuilder.build(), tokenMapEnabled, false, null, context),
+          ImmutableList.of(NodeStateEvent.removed((DefaultNode) removedNode)));
     }
   }
 }

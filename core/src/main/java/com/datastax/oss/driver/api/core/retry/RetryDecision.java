@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,11 @@
  */
 package com.datastax.oss.driver.api.core.retry;
 
-/** A decision from the {@link RetryPolicy} on how to handle a retry. */
+/**
+ * A decision from the {@link RetryPolicy} on how to handle a retry.
+ *
+ * @see RetryVerdict#getRetryDecision()
+ */
 public enum RetryDecision {
   /** Retry the operation on the same node. */
   RETRY_SAME,

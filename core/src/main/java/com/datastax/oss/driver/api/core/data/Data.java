@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 package com.datastax.oss.driver.api.core.data;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
 import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.detach.Detachable;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /** A data structure containing CQL values. */
 public interface Data {
@@ -32,16 +33,18 @@ public interface Data {
    *
    * @see Detachable
    */
+  @NonNull
   CodecRegistry codecRegistry();
 
   /**
    * Returns the protocol version that is currently used to convert values for this instance.
    *
    * <p>If you obtained this object from the driver, this will be set automatically. If you created
-   * it manually, or just deserialized it, it is set to {@link CoreProtocolVersion#DEFAULT}. You can
-   * reattach this object to an existing driver instance to use its protocol version.
+   * it manually, or just deserialized it, it is set to {@link DefaultProtocolVersion#DEFAULT}. You
+   * can reattach this object to an existing driver instance to use its protocol version.
    *
    * @see Detachable
    */
+  @NonNull
   ProtocolVersion protocolVersion();
 }

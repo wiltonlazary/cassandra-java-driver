@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@
  */
 package com.datastax.oss.driver.internal;
 
+import static org.assertj.core.api.Assertions.fail;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-
-import static org.assertj.core.api.Assertions.fail;
 
 public abstract class SerializationHelper {
 
@@ -36,6 +36,8 @@ public abstract class SerializationHelper {
     }
   }
 
+  // the calling code performs validations on the result, so this doesn't matter
+  @SuppressWarnings("TypeParameterUnusedInFormals")
   public static <T> T deserialize(byte[] bytes) {
     try {
       ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes));

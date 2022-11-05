@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,23 +15,24 @@
  */
 package com.datastax.oss.driver.internal.core.control;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import com.datastax.oss.driver.internal.core.channel.DriverChannelOptions;
 import com.datastax.oss.driver.internal.core.channel.EventCallback;
-import com.datastax.oss.driver.internal.core.metadata.SchemaElementKind;
 import com.datastax.oss.driver.internal.core.metadata.TopologyEvent;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableList;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
 import com.datastax.oss.protocol.internal.response.event.SchemaChangeEvent;
 import com.datastax.oss.protocol.internal.response.event.StatusChangeEvent;
 import com.datastax.oss.protocol.internal.response.event.TopologyChangeEvent;
-import com.google.common.collect.ImmutableList;
 import java.util.concurrent.CompletableFuture;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.eq;
 
 public class ControlConnectionEventsTest extends ControlConnectionTestBase {
 
@@ -41,21 +42,24 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     DriverChannel channel1 = newMockDriverChannel(1);
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
-    Mockito.when(channelFactory.connect(eq(ADDRESS1), optionsCaptor.capture()))
+    when(channelFactory.connect(eq(node1), optionsCaptor.capture()))
         .thenReturn(CompletableFuture.completedFuture(channel1));
 
     // When
-    controlConnection.init(true);
-    waitForPendingAdminTasks();
-    DriverChannelOptions channelOptions = optionsCaptor.getValue();
+    controlConnection.init(true, false, false);
 
     // Then
-    assertThat(channelOptions.eventTypes)
-        .containsExactly(
-            ProtocolConstants.EventType.SCHEMA_CHANGE,
-            ProtocolConstants.EventType.STATUS_CHANGE,
-            ProtocolConstants.EventType.TOPOLOGY_CHANGE);
-    assertThat(channelOptions.eventCallback).isEqualTo(controlConnection);
+    await()
+        .untilAsserted(
+            () -> {
+              DriverChannelOptions channelOptions = optionsCaptor.getValue();
+              assertThat(channelOptions.eventTypes)
+                  .containsExactly(
+                      ProtocolConstants.EventType.SCHEMA_CHANGE,
+                      ProtocolConstants.EventType.STATUS_CHANGE,
+                      ProtocolConstants.EventType.TOPOLOGY_CHANGE);
+              assertThat(channelOptions.eventCallback).isEqualTo(controlConnection);
+            });
   }
 
   @Test
@@ -64,18 +68,21 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     DriverChannel channel1 = newMockDriverChannel(1);
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
-    Mockito.when(channelFactory.connect(eq(ADDRESS1), optionsCaptor.capture()))
+    when(channelFactory.connect(eq(node1), optionsCaptor.capture()))
         .thenReturn(CompletableFuture.completedFuture(channel1));
 
     // When
-    controlConnection.init(false);
-    waitForPendingAdminTasks();
-    DriverChannelOptions channelOptions = optionsCaptor.getValue();
+    controlConnection.init(false, false, false);
 
     // Then
-    assertThat(channelOptions.eventTypes)
-        .containsExactly(ProtocolConstants.EventType.SCHEMA_CHANGE);
-    assertThat(channelOptions.eventCallback).isEqualTo(controlConnection);
+    await()
+        .untilAsserted(
+            () -> {
+              DriverChannelOptions channelOptions = optionsCaptor.getValue();
+              assertThat(channelOptions.eventTypes)
+                  .containsExactly(ProtocolConstants.EventType.SCHEMA_CHANGE);
+              assertThat(channelOptions.eventCallback).isEqualTo(controlConnection);
+            });
   }
 
   @Test
@@ -84,10 +91,10 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     DriverChannel channel1 = newMockDriverChannel(1);
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
-    Mockito.when(channelFactory.connect(eq(ADDRESS1), optionsCaptor.capture()))
+    when(channelFactory.connect(eq(node1), optionsCaptor.capture()))
         .thenReturn(CompletableFuture.completedFuture(channel1));
-    controlConnection.init(true);
-    waitForPendingAdminTasks();
+    controlConnection.init(true, false, false);
+    await().until(() -> optionsCaptor.getValue() != null);
     EventCallback callback = optionsCaptor.getValue().eventCallback;
     StatusChangeEvent event =
         new StatusChangeEvent(ProtocolConstants.StatusChangeType.UP, ADDRESS1);
@@ -96,8 +103,7 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     callback.onEvent(event);
 
     // Then
-    Mockito.verify(addressTranslator).translate(ADDRESS1);
-    Mockito.verify(eventBus).fire(TopologyEvent.suggestUp(ADDRESS1));
+    verify(eventBus).fire(TopologyEvent.suggestUp(ADDRESS1));
   }
 
   @Test
@@ -106,10 +112,10 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     DriverChannel channel1 = newMockDriverChannel(1);
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
-    Mockito.when(channelFactory.connect(eq(ADDRESS1), optionsCaptor.capture()))
+    when(channelFactory.connect(eq(node1), optionsCaptor.capture()))
         .thenReturn(CompletableFuture.completedFuture(channel1));
-    controlConnection.init(true);
-    waitForPendingAdminTasks();
+    controlConnection.init(true, false, false);
+    await().until(() -> optionsCaptor.getValue() != null);
     EventCallback callback = optionsCaptor.getValue().eventCallback;
     TopologyChangeEvent event =
         new TopologyChangeEvent(ProtocolConstants.TopologyChangeType.NEW_NODE, ADDRESS1);
@@ -118,8 +124,7 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     callback.onEvent(event);
 
     // Then
-    Mockito.verify(addressTranslator).translate(ADDRESS1);
-    Mockito.verify(eventBus).fire(TopologyEvent.suggestAdded(ADDRESS1));
+    verify(eventBus).fire(TopologyEvent.suggestAdded(ADDRESS1));
   }
 
   @Test
@@ -128,10 +133,10 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     DriverChannel channel1 = newMockDriverChannel(1);
     ArgumentCaptor<DriverChannelOptions> optionsCaptor =
         ArgumentCaptor.forClass(DriverChannelOptions.class);
-    Mockito.when(channelFactory.connect(eq(ADDRESS1), optionsCaptor.capture()))
+    when(channelFactory.connect(eq(node1), optionsCaptor.capture()))
         .thenReturn(CompletableFuture.completedFuture(channel1));
-    controlConnection.init(false);
-    waitForPendingAdminTasks();
+    controlConnection.init(false, false, false);
+    await().until(() -> optionsCaptor.getValue() != null);
     EventCallback callback = optionsCaptor.getValue().eventCallback;
     SchemaChangeEvent event =
         new SchemaChangeEvent(
@@ -145,7 +150,6 @@ public class ControlConnectionEventsTest extends ControlConnectionTestBase {
     callback.onEvent(event);
 
     // Then
-    Mockito.verify(metadataManager)
-        .refreshSchema(SchemaElementKind.FUNCTION, "ks", "fn", ImmutableList.of("text", "text"));
+    verify(metadataManager).refreshSchema("ks", false, false);
   }
 }

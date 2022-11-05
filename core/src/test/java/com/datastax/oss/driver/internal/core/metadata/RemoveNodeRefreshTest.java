@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,46 +15,70 @@
  */
 package com.datastax.oss.driver.internal.core.metadata;
 
-import com.google.common.collect.ImmutableMap;
-import java.net.InetSocketAddress;
-import org.junit.Test;
-
 import static com.datastax.oss.driver.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 
+import com.datastax.oss.driver.internal.core.channel.ChannelFactory;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.internal.core.metrics.MetricsFactory;
+import com.datastax.oss.driver.shaded.guava.common.collect.ImmutableMap;
+import java.util.Collections;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnitRunner;
+
+@RunWith(MockitoJUnitRunner.class)
 public class RemoveNodeRefreshTest {
 
-  private static final InetSocketAddress ADDRESS1 = new InetSocketAddress("127.0.0.1", 9042);
-  private static final InetSocketAddress ADDRESS2 = new InetSocketAddress("127.0.0.2", 9042);
+  @Mock private InternalDriverContext context;
+  @Mock protected MetricsFactory metricsFactory;
+  @Mock private ChannelFactory channelFactory;
 
-  private static final DefaultNode node1 = new DefaultNode(ADDRESS1);
-  private static final DefaultNode node2 = new DefaultNode(ADDRESS2);
+  private DefaultNode node1;
+  private DefaultNode node2;
+
+  @Before
+  public void setup() {
+    when(context.getMetricsFactory()).thenReturn(metricsFactory);
+    when(context.getChannelFactory()).thenReturn(channelFactory);
+    node1 = TestNodeFactory.newNode(1, context);
+    node2 = TestNodeFactory.newNode(2, context);
+  }
 
   @Test
   public void should_remove_existing_node() {
     // Given
     DefaultMetadata oldMetadata =
-        new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1, ADDRESS2, node2));
-    RemoveNodeRefresh refresh = new RemoveNodeRefresh(oldMetadata, ADDRESS2, "test");
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1, node2.getHostId(), node2),
+            Collections.emptyMap(),
+            null,
+            null);
+    RemoveNodeRefresh refresh = new RemoveNodeRefresh(node2.getBroadcastRpcAddress().get());
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    assertThat(refresh.newMetadata.getNodes()).containsOnlyKeys(ADDRESS1);
-    assertThat(refresh.events).containsExactly(NodeStateEvent.removed(node2));
+    assertThat(result.newMetadata.getNodes()).containsOnlyKeys(node1.getHostId());
+    assertThat(result.events).containsExactly(NodeStateEvent.removed(node2));
   }
 
   @Test
   public void should_not_remove_nonexistent_node() {
     // Given
-    DefaultMetadata oldMetadata = new DefaultMetadata(ImmutableMap.of(ADDRESS1, node1));
-    RemoveNodeRefresh refresh = new RemoveNodeRefresh(oldMetadata, ADDRESS2, "test");
+    DefaultMetadata oldMetadata =
+        new DefaultMetadata(
+            ImmutableMap.of(node1.getHostId(), node1), Collections.emptyMap(), null, null);
+    RemoveNodeRefresh refresh = new RemoveNodeRefresh(node2.getBroadcastRpcAddress().get());
 
     // When
-    refresh.compute();
+    MetadataRefresh.Result result = refresh.compute(oldMetadata, false, context);
 
     // Then
-    assertThat(refresh.newMetadata.getNodes()).containsOnlyKeys(ADDRESS1);
-    assertThat(refresh.events).isEmpty();
+    assertThat(result.newMetadata.getNodes()).containsOnlyKeys(node1.getHostId());
+    assertThat(result.events).isEmpty();
   }
 }

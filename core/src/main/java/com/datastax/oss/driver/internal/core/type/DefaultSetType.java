@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,12 +18,16 @@ package com.datastax.oss.driver.internal.core.type;
 import com.datastax.oss.driver.api.core.detach.AttachmentPoint;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.SetType;
-import com.google.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.io.ObjectInputStream;
+import java.io.Serializable;
 import java.util.Objects;
+import net.jcip.annotations.Immutable;
 
-public class DefaultSetType implements SetType {
+@Immutable
+public class DefaultSetType implements SetType, Serializable {
 
   private static final long serialVersionUID = 1;
 
@@ -32,12 +36,13 @@ public class DefaultSetType implements SetType {
   /** @serial */
   private final boolean frozen;
 
-  public DefaultSetType(DataType elementType, boolean frozen) {
+  public DefaultSetType(@NonNull DataType elementType, boolean frozen) {
     Preconditions.checkNotNull(elementType);
     this.elementType = elementType;
     this.frozen = frozen;
   }
 
+  @NonNull
   @Override
   public DataType getElementType() {
     return elementType;
@@ -54,7 +59,7 @@ public class DefaultSetType implements SetType {
   }
 
   @Override
-  public void attach(AttachmentPoint attachmentPoint) {
+  public void attach(@NonNull AttachmentPoint attachmentPoint) {
     elementType.attach(attachmentPoint);
   }
 

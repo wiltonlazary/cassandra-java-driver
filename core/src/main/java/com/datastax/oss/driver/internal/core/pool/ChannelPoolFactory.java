@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@ import com.datastax.oss.driver.api.core.loadbalancing.NodeDistance;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import java.util.concurrent.CompletionStage;
+import net.jcip.annotations.ThreadSafe;
 
 /** Just a level of indirection to make testing easier. */
+@ThreadSafe
 public class ChannelPoolFactory {
   public CompletionStage<ChannelPool> init(
       Node node,

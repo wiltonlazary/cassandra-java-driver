@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,21 +15,28 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinition;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.cql.Statement;
-import com.datastax.oss.driver.api.core.session.Session;
 import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs;
 import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
+import com.datastax.oss.driver.shaded.guava.common.collect.Lists;
 import com.datastax.oss.protocol.internal.util.Bytes;
-import com.google.common.collect.Lists;
 import java.nio.ByteBuffer;
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
@@ -37,37 +44,34 @@ import java.util.concurrent.CompletionStage;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class DefaultAsyncResultSetTest {
 
   @Mock private ColumnDefinitions columnDefinitions;
   @Mock private ExecutionInfo executionInfo;
   @Mock private Statement<?> statement;
-  @Mock private Session session;
+  @Mock private CqlSession session;
   @Mock private InternalDriverContext context;
 
   @Before
   public void setup() {
     MockitoAnnotations.initMocks(this);
 
-    Mockito.when(executionInfo.getStatement()).thenReturn((Statement) statement);
-    Mockito.when(context.codecRegistry()).thenReturn(CodecRegistry.DEFAULT);
-    Mockito.when(context.protocolVersion()).thenReturn(CoreProtocolVersion.DEFAULT);
+    when(executionInfo.getRequest()).thenAnswer(invocation -> statement);
+    when(context.getCodecRegistry()).thenReturn(CodecRegistry.DEFAULT);
+    when(context.getProtocolVersion()).thenReturn(DefaultProtocolVersion.DEFAULT);
   }
 
   @Test(expected = IllegalStateException.class)
   public void should_fail_to_fetch_next_page_if_last() {
     // Given
-    Mockito.when(executionInfo.getPagingState()).thenReturn(null);
+    when(executionInfo.getPagingState()).thenReturn(null);
 
     // When
     DefaultAsyncResultSet resultSet =
         new DefaultAsyncResultSet(
-            columnDefinitions, executionInfo, new LinkedList<>(), session, context);
+            columnDefinitions, executionInfo, new ArrayDeque<>(), session, context);
 
     // Then
     assertThat(resultSet.hasMorePages()).isFalse();
@@ -78,36 +82,36 @@ public class DefaultAsyncResultSetTest {
   public void should_invoke_session_to_fetch_next_page() {
     // Given
     ByteBuffer mockPagingState = ByteBuffer.allocate(0);
-    Mockito.when(executionInfo.getPagingState()).thenReturn(mockPagingState);
+    when(executionInfo.getPagingState()).thenReturn(mockPagingState);
 
-    Statement<?> mockNextStatement = Mockito.mock(Statement.class);
-    Mockito.when(((Statement) statement).copy(mockPagingState)).thenReturn(mockNextStatement);
+    Statement<?> mockNextStatement = mock(Statement.class);
+    when(((Statement) statement).copy(mockPagingState)).thenReturn(mockNextStatement);
 
     CompletableFuture<AsyncResultSet> mockResultFuture = new CompletableFuture<>();
-    Mockito.when(session.executeAsync(Mockito.any(Statement.class))).thenReturn(mockResultFuture);
+    when(session.executeAsync(any(Statement.class))).thenAnswer(invocation -> mockResultFuture);
 
     // When
     DefaultAsyncResultSet resultSet =
         new DefaultAsyncResultSet(
-            columnDefinitions, executionInfo, new LinkedList<>(), session, context);
+            columnDefinitions, executionInfo, new ArrayDeque<>(), session, context);
     assertThat(resultSet.hasMorePages()).isTrue();
     CompletionStage<AsyncResultSet> nextPageFuture = resultSet.fetchNextPage();
 
     // Then
-    Mockito.verify(statement).copy(mockPagingState);
-    Mockito.verify(session).executeAsync(mockNextStatement);
-    assertThat(nextPageFuture).isEqualTo(mockResultFuture);
+    verify(statement).copy(mockPagingState);
+    verify(session).executeAsync(mockNextStatement);
+    assertThatStage(nextPageFuture).isEqualTo(mockResultFuture);
   }
 
   @Test
   public void should_report_applied_if_column_not_present_and_empty() {
     // Given
-    Mockito.when(columnDefinitions.contains("[applied]")).thenReturn(false);
+    when(columnDefinitions.contains("[applied]")).thenReturn(false);
 
     // When
     DefaultAsyncResultSet resultSet =
         new DefaultAsyncResultSet(
-            columnDefinitions, executionInfo, new LinkedList<>(), session, context);
+            columnDefinitions, executionInfo, new ArrayDeque<>(), session, context);
 
     // Then
     assertThat(resultSet.wasApplied()).isTrue();
@@ -116,8 +120,8 @@ public class DefaultAsyncResultSetTest {
   @Test
   public void should_report_applied_if_column_not_present_and_not_empty() {
     // Given
-    Mockito.when(columnDefinitions.contains("[applied]")).thenReturn(false);
-    Queue<List<ByteBuffer>> data = new LinkedList<>();
+    when(columnDefinitions.contains("[applied]")).thenReturn(false);
+    Queue<List<ByteBuffer>> data = new ArrayDeque<>();
     data.add(Lists.newArrayList(Bytes.fromHexString("0xffff")));
 
     // When
@@ -131,15 +135,15 @@ public class DefaultAsyncResultSetTest {
   @Test
   public void should_report_not_applied_if_column_present_and_false() {
     // Given
-    Mockito.when(columnDefinitions.contains("[applied]")).thenReturn(true);
-    ColumnDefinition columnDefinition = Mockito.mock(ColumnDefinition.class);
-    Mockito.when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
-    Mockito.when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
-    Mockito.when(columnDefinitions.firstIndexOf("[applied]")).thenReturn(0);
-    Mockito.when(columnDefinitions.get(0)).thenReturn(columnDefinition);
+    when(columnDefinitions.contains("[applied]")).thenReturn(true);
+    ColumnDefinition columnDefinition = mock(ColumnDefinition.class);
+    when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
+    when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
+    when(columnDefinitions.firstIndexOf("[applied]")).thenReturn(0);
+    when(columnDefinitions.get(0)).thenReturn(columnDefinition);
 
-    Queue<List<ByteBuffer>> data = new LinkedList<>();
-    data.add(Lists.newArrayList(TypeCodecs.BOOLEAN.encode(false, CoreProtocolVersion.DEFAULT)));
+    Queue<List<ByteBuffer>> data = new ArrayDeque<>();
+    data.add(Lists.newArrayList(TypeCodecs.BOOLEAN.encode(false, DefaultProtocolVersion.DEFAULT)));
 
     // When
     DefaultAsyncResultSet resultSet =
@@ -152,15 +156,15 @@ public class DefaultAsyncResultSetTest {
   @Test
   public void should_report_not_applied_if_column_present_and_true() {
     // Given
-    Mockito.when(columnDefinitions.contains("[applied]")).thenReturn(true);
-    ColumnDefinition columnDefinition = Mockito.mock(ColumnDefinition.class);
-    Mockito.when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
-    Mockito.when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
-    Mockito.when(columnDefinitions.firstIndexOf("[applied]")).thenReturn(0);
-    Mockito.when(columnDefinitions.get(0)).thenReturn(columnDefinition);
+    when(columnDefinitions.contains("[applied]")).thenReturn(true);
+    ColumnDefinition columnDefinition = mock(ColumnDefinition.class);
+    when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
+    when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
+    when(columnDefinitions.firstIndexOf("[applied]")).thenReturn(0);
+    when(columnDefinitions.get(0)).thenReturn(columnDefinition);
 
-    Queue<List<ByteBuffer>> data = new LinkedList<>();
-    data.add(Lists.newArrayList(TypeCodecs.BOOLEAN.encode(true, CoreProtocolVersion.DEFAULT)));
+    Queue<List<ByteBuffer>> data = new ArrayDeque<>();
+    data.add(Lists.newArrayList(TypeCodecs.BOOLEAN.encode(true, DefaultProtocolVersion.DEFAULT)));
 
     // When
     DefaultAsyncResultSet resultSet =
@@ -173,15 +177,15 @@ public class DefaultAsyncResultSetTest {
   @Test(expected = IllegalStateException.class)
   public void should_fail_to_report_if_applied_if_column_present_but_empty() {
     // Given
-    Mockito.when(columnDefinitions.contains("[applied]")).thenReturn(true);
-    ColumnDefinition columnDefinition = Mockito.mock(ColumnDefinition.class);
-    Mockito.when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
-    Mockito.when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
+    when(columnDefinitions.contains("[applied]")).thenReturn(true);
+    ColumnDefinition columnDefinition = mock(ColumnDefinition.class);
+    when(columnDefinition.getType()).thenReturn(DataTypes.BOOLEAN);
+    when(columnDefinitions.get("[applied]")).thenReturn(columnDefinition);
 
     // When
     DefaultAsyncResultSet resultSet =
         new DefaultAsyncResultSet(
-            columnDefinitions, executionInfo, new LinkedList<>(), session, context);
+            columnDefinitions, executionInfo, new ArrayDeque<>(), session, context);
 
     // Then
     resultSet.wasApplied();

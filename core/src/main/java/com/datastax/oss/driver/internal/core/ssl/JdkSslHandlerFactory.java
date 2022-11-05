@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,15 @@
  */
 package com.datastax.oss.driver.internal.core.ssl;
 
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
 import com.datastax.oss.driver.api.core.ssl.SslEngineFactory;
 import io.netty.channel.Channel;
 import io.netty.handler.ssl.SslHandler;
-import java.net.SocketAddress;
 import javax.net.ssl.SSLEngine;
+import net.jcip.annotations.ThreadSafe;
 
 /** SSL handler factory used when JDK-based SSL was configured through the driver's public API. */
+@ThreadSafe
 public class JdkSslHandlerFactory implements SslHandlerFactory {
   private final SslEngineFactory sslEngineFactory;
 
@@ -30,8 +32,13 @@ public class JdkSslHandlerFactory implements SslHandlerFactory {
   }
 
   @Override
-  public SslHandler newSslHandler(Channel channel, SocketAddress remoteEndpoint) {
+  public SslHandler newSslHandler(Channel channel, EndPoint remoteEndpoint) {
     SSLEngine engine = sslEngineFactory.newSslEngine(remoteEndpoint);
     return new SslHandler(engine);
+  }
+
+  @Override
+  public void close() throws Exception {
+    sslEngineFactory.close();
   }
 }

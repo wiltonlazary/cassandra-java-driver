@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,7 +70,7 @@ public class VIntCoding {
   private static long readUnsignedVInt(DataInput input) throws IOException {
     int firstByte = input.readByte();
 
-    //Bail out early if this is one byte, necessary or it fails later
+    // Bail out early if this is one byte, necessary or it fails later
     if (firstByte >= 0) {
       return firstByte;
     }
@@ -90,20 +90,22 @@ public class VIntCoding {
     return decodeZigZag64(readUnsignedVInt(input));
   }
 
-  // & this with the first byte to give the value part for a given extraBytesToRead encoded in the byte
+  // & this with the first byte to give the value part for a given extraBytesToRead encoded in the
+  // byte
   private static int firstByteValueMask(int extraBytesToRead) {
     // by including the known 0bit in the mask, we can use this for encodeExtraBytesToRead
     return 0xff >> extraBytesToRead;
   }
 
-  private static int encodeExtraBytesToRead(int extraBytesToRead) {
+  private static byte encodeExtraBytesToRead(int extraBytesToRead) {
     // because we have an extra bit in the value mask, we just need to invert it
-    return ~firstByteValueMask(extraBytesToRead);
+    return (byte) ~firstByteValueMask(extraBytesToRead);
   }
 
   private static int numberOfExtraBytesToRead(int firstByte) {
     // we count number of set upper bits; so if we simply invert all of the bits, we're golden
-    // this is aided by the fact that we only work with negative numbers, so when upcast to an int all
+    // this is aided by the fact that we only work with negative numbers, so when upcast to an int
+    // all
     // of the new upper bits are also set, so by inverting we set all of them to zero
     return Integer.numberOfLeadingZeros(~firstByte) - 24;
   }

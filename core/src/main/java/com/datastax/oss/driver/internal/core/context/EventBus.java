@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 package com.datastax.oss.driver.internal.core.context;
 
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimaps;
-import com.google.common.collect.SetMultimap;
+import com.datastax.oss.driver.shaded.guava.common.collect.HashMultimap;
+import com.datastax.oss.driver.shaded.guava.common.collect.Multimaps;
+import com.datastax.oss.driver.shaded.guava.common.collect.SetMultimap;
 import java.util.function.Consumer;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,6 +34,7 @@ import org.slf4j.LoggerFactory;
  * <p>We don't use Guava's implementation because Guava is shaded in the driver, and the event bus
  * needs to be accessible from low-level 3rd party customizations.
  */
+@ThreadSafe
 public class EventBus {
   private static final Logger LOG = LoggerFactory.getLogger(EventBus.class);
 
@@ -53,7 +55,7 @@ public class EventBus {
    *
    * @return a key that is needed to unregister later.
    */
-  public <T> Object register(Class<T> eventClass, Consumer<T> listener) {
+  public <EventT> Object register(Class<EventT> eventClass, Consumer<EventT> listener) {
     LOG.debug("[{}] Registering {} for {}", logPrefix, listener, eventClass);
     listeners.put(eventClass, listener);
     // The reason for the key mechanism is that this will often be used with method references,
@@ -67,7 +69,7 @@ public class EventBus {
    *
    * @param key the key that was returned by {@link #register(Class, Consumer)}
    */
-  public <T> boolean unregister(Object key, Class<T> eventClass) {
+  public <EventT> boolean unregister(Object key, Class<EventT> eventClass) {
     LOG.debug("[{}] Unregistering {} for {}", logPrefix, key, eventClass);
     return listeners.remove(eventClass, key);
   }
@@ -82,14 +84,14 @@ public class EventBus {
    * processing asynchronously if needed.
    */
   public void fire(Object event) {
-    LOG.trace("[{}] Firing an instance of {}: {}", logPrefix, event.getClass(), event);
+    LOG.debug("[{}] Firing an instance of {}: {}", logPrefix, event.getClass(), event);
     // if the exact match thing gets too cumbersome, we can reconsider, but I'd like to avoid
     // scanning all the keys with instanceof checks.
     Class<?> eventClass = event.getClass();
     for (Consumer<?> l : listeners.get(eventClass)) {
       @SuppressWarnings("unchecked")
       Consumer<Object> listener = (Consumer<Object>) l;
-      LOG.trace("[{}] Notifying {} of {}", logPrefix, listener, event);
+      LOG.debug("[{}] Notifying {} of {}", logPrefix, listener, event);
       listener.accept(event);
     }
   }

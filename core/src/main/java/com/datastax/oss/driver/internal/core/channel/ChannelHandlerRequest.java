@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,9 @@
 package com.datastax.oss.driver.internal.core.channel;
 
 import com.datastax.oss.driver.api.core.DriverTimeoutException;
+import com.datastax.oss.driver.api.core.connection.BusyConnectionException;
 import com.datastax.oss.driver.internal.core.util.ProtocolUtils;
+import com.datastax.oss.driver.internal.core.util.concurrent.UncaughtExceptions;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.Message;
 import com.datastax.oss.protocol.internal.response.Error;
@@ -26,12 +28,15 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import net.jcip.annotations.NotThreadSafe;
 
 /** Common infrastructure to send a native protocol request from a channel handler. */
+@NotThreadSafe // must be confined to the channel's event loop
 abstract class ChannelHandlerRequest implements ResponseCallback {
 
   final Channel channel;
   final ChannelHandlerContext ctx;
+  final InFlightHandler inFlightHandler;
   private final long timeoutMillis;
 
   private ScheduledFuture<?> timeoutFuture;
@@ -39,6 +44,8 @@ abstract class ChannelHandlerRequest implements ResponseCallback {
   ChannelHandlerRequest(ChannelHandlerContext ctx, long timeoutMillis) {
     this.ctx = ctx;
     this.channel = ctx.channel();
+    this.inFlightHandler = ctx.pipeline().get(InFlightHandler.class);
+    assert inFlightHandler != null;
     this.timeoutMillis = timeoutMillis;
   }
 
@@ -57,10 +64,17 @@ abstract class ChannelHandlerRequest implements ResponseCallback {
 
   void send() {
     assert channel.eventLoop().inEventLoop();
-    DriverChannel.RequestMessage message =
-        new DriverChannel.RequestMessage(getRequest(), false, Frame.NO_PAYLOAD, this);
-    ChannelFuture writeFuture = channel.writeAndFlush(message);
-    writeFuture.addListener(this::writeListener);
+    if (!inFlightHandler.preAcquireId()) {
+      fail(
+          new BusyConnectionException(
+              String.format(
+                  "%s has reached its maximum number of simultaneous requests", channel)));
+    } else {
+      DriverChannel.RequestMessage message =
+          new DriverChannel.RequestMessage(getRequest(), false, Frame.NO_PAYLOAD, this);
+      ChannelFuture writeFuture = channel.writeAndFlush(message);
+      writeFuture.addListener(this::writeListener);
+    }
   }
 
   private void writeListener(Future<? super Void> writeFuture) {
@@ -68,7 +82,9 @@ abstract class ChannelHandlerRequest implements ResponseCallback {
       timeoutFuture =
           channel.eventLoop().schedule(this::onTimeout, timeoutMillis, TimeUnit.MILLISECONDS);
     } else {
-      fail(describe() + ": error writing ", writeFuture.cause());
+      String message =
+          String.format("%s: failed to send request (%s)", describe(), writeFuture.cause());
+      fail(message, writeFuture.cause());
     }
   }
 
@@ -84,14 +100,15 @@ abstract class ChannelHandlerRequest implements ResponseCallback {
     if (timeoutFuture != null) {
       timeoutFuture.cancel(true);
     }
-    fail(describe() + ": unexpected failure", error);
+    String message = String.format("%s: unexpected failure (%s)", describe(), error);
+    fail(message, error);
   }
 
   private void onTimeout() {
     fail(new DriverTimeoutException(describe() + ": timed out after " + timeoutMillis + " ms"));
     if (!channel.closeFuture().isDone()) {
       // Cancel the response callback
-      channel.writeAndFlush(this);
+      channel.writeAndFlush(this).addListener(UncaughtExceptions::log);
     }
   }
 
@@ -101,13 +118,13 @@ abstract class ChannelHandlerRequest implements ResponseCallback {
       fail(
           new IllegalArgumentException(
               String.format(
-                  "%s: unexpected server error [%s] %s",
+                  "%s: server replied with unexpected error code [%s]: %s",
                   describe(), ProtocolUtils.errorCodeString(error.code), error.message)));
     } else {
       fail(
           new IllegalArgumentException(
               String.format(
-                  "%s: unexpected server response opcode=%s",
+                  "%s: server replied with unexpected response type (opcode=%s)",
                   describe(), ProtocolUtils.opcodeString(response.opcode))));
     }
   }

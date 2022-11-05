@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,53 +15,20 @@
  */
 package com.datastax.oss.driver.api.core.config;
 
-/** Describes an option in the driver's configuration. */
-public interface DriverOption {
-  String getPath();
+import edu.umd.cs.findbugs.annotations.NonNull;
 
-  boolean required();
+/**
+ * Describes an option in the driver's configuration.
+ *
+ * <p>This is just a thin wrapper around the option's path, to make it easier to find where it is
+ * referenced in the code. We recommend using enums for implementations.
+ */
+public interface DriverOption {
 
   /**
-   * Concatenates two options to build a longer path.
-   *
-   * <p>This is intended for options that can appear at different levels, for example arguments of
-   * policies that can be nested.
+   * The option's path. Paths are hierarchical and each segment is separated by a dot, e.g. {@code
+   * metadata.schema.enabled}.
    */
-  default DriverOption concat(DriverOption child) {
-    DriverOption parent = this;
-    // Not particularly efficient, but this will mainly be used for policies, which initialize at
-    // startup, so it should be good enough.
-    return new DriverOption() {
-      @Override
-      public String getPath() {
-        return parent.getPath() + "." + child.getPath();
-      }
-
-      @Override
-      public boolean required() {
-        // This property is only for initial validation of the configuration, and we can't validate
-        // nested fields because they are by definition not known in advance.
-        return false;
-      }
-
-      // Only needed for unit tests: comparing options has no meaningful purpose, but it is needed
-      // to mock them
-      @Override
-      public boolean equals(Object other) {
-        if (other == this) {
-          return true;
-        } else if (other instanceof DriverOption) {
-          DriverOption that = (DriverOption) other;
-          return this.getPath().equals(that.getPath());
-        } else {
-          return false;
-        }
-      }
-
-      @Override
-      public int hashCode() {
-        return getPath().hashCode();
-      }
-    };
-  }
+  @NonNull
+  String getPath();
 }

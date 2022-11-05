@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,14 +17,17 @@ package com.datastax.oss.driver.internal.core.util.concurrent;
 
 import com.datastax.oss.driver.api.core.DriverException;
 import com.datastax.oss.driver.api.core.DriverExecutionException;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
+import com.datastax.oss.driver.shaded.guava.common.base.Preconditions;
+import com.datastax.oss.driver.shaded.guava.common.base.Throwables;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 public class CompletableFutures {
 
@@ -69,13 +72,46 @@ public class CompletableFutures {
   /** Do something when all inputs are done (success or failure). */
   public static <T> void whenAllDone(
       List<CompletionStage<T>> inputs, Runnable callback, Executor executor) {
-    allDone(inputs)
-        .thenAcceptAsync(success -> callback.run(), executor)
-        .exceptionally(UncaughtExceptions::log);
+    allDone(inputs).thenRunAsync(callback, executor).exceptionally(UncaughtExceptions::log);
+  }
+  /**
+   * @return a completion stage that completes when all inputs are successful, or fails if any of
+   *     them failed.
+   */
+  public static <T> CompletionStage<Void> allSuccessful(List<CompletionStage<T>> inputs) {
+    CompletableFuture<Void> result = new CompletableFuture<>();
+    if (inputs.isEmpty()) {
+      result.complete(null);
+    } else {
+      final int todo = inputs.size();
+      final AtomicInteger done = new AtomicInteger();
+      final CopyOnWriteArrayList<Throwable> errors = new CopyOnWriteArrayList<>();
+      for (CompletionStage<?> input : inputs) {
+        input.whenComplete(
+            (v, error) -> {
+              if (error != null) {
+                errors.add(error);
+              }
+              if (done.incrementAndGet() == todo) {
+                if (errors.isEmpty()) {
+                  result.complete(null);
+                } else {
+                  Throwable finalError = errors.get(0);
+                  for (int i = 1; i < errors.size(); i++) {
+                    finalError.addSuppressed(errors.get(i));
+                  }
+                  result.completeExceptionally(finalError);
+                }
+              }
+            });
+      }
+    }
+    return result;
   }
 
   /** Get the result now, when we know for sure that the future is complete. */
-  public static <T> T getCompleted(CompletableFuture<T> future) {
+  public static <T> T getCompleted(CompletionStage<T> stage) {
+    CompletableFuture<T> future = stage.toCompletableFuture();
     Preconditions.checkArgument(future.isDone() && !future.isCompletedExceptionally());
     try {
       return future.get();
@@ -86,7 +122,8 @@ public class CompletableFutures {
   }
 
   /** Get the error now, when we know for sure that the future is failed. */
-  public static Throwable getFailed(CompletableFuture<?> future) {
+  public static Throwable getFailed(CompletionStage<?> stage) {
+    CompletableFuture<?> future = stage.toCompletableFuture();
     Preconditions.checkArgument(future.isCompletedExceptionally());
     try {
       future.get();
@@ -120,5 +157,37 @@ public class CompletableFutures {
         Thread.currentThread().interrupt();
       }
     }
+  }
+
+  /**
+   * Executes a function on the calling thread and returns result in a {@link CompletableFuture}.
+   *
+   * <p>Similar to {@link CompletableFuture#completedFuture} except takes a {@link Supplier} and if
+   * the supplier throws an unchecked exception, the returning future fails with that exception.
+   *
+   * @param supplier Function to execute
+   * @param <T> Type of result
+   * @return result of function wrapped in future
+   */
+  public static <T> CompletableFuture<T> wrap(Supplier<T> supplier) {
+    try {
+      return CompletableFuture.completedFuture(supplier.get());
+    } catch (Throwable t) {
+      return failedFuture(t);
+    }
+  }
+
+  public static void whenCancelled(CompletionStage<?> stage, Runnable action) {
+    stage.exceptionally(
+        (error) -> {
+          if (error instanceof CancellationException) {
+            action.run();
+          }
+          return null;
+        });
+  }
+
+  public static void propagateCancellation(CompletionStage<?> source, CompletionStage<?> target) {
+    whenCancelled(source, () -> target.toCompletableFuture().cancel(true));
   }
 }

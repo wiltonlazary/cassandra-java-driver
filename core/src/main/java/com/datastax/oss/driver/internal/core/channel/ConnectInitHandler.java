@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,12 +15,12 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
+import com.datastax.oss.driver.internal.core.util.concurrent.PromiseCombiner;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
-import io.netty.util.concurrent.Future;
-import io.netty.util.concurrent.PromiseCombiner;
 import java.net.SocketAddress;
+import net.jcip.annotations.NotThreadSafe;
 
 /**
  * A handler that delays the promise returned by {@code bootstrap.connect()}, in order to run a
@@ -35,6 +35,7 @@ import java.net.SocketAddress;
  * clients' promise can be completed with {@link #setConnectSuccess()} or {@link
  * #setConnectFailure(Throwable)}.
  */
+@NotThreadSafe
 public abstract class ConnectInitHandler extends ChannelDuplexHandler {
   // the completion of the custom initialization process
   private ChannelPromise initPromise;
@@ -56,9 +57,7 @@ public abstract class ConnectInitHandler extends ChannelDuplexHandler {
     realConnectPromise.addListener(future -> onRealConnect(ctx));
 
     // Make the caller's promise wait on the other two:
-    PromiseCombiner combiner = new PromiseCombiner();
-    combiner.addAll(new Future[] {realConnectPromise, initPromise});
-    combiner.finish(callerPromise);
+    PromiseCombiner.combine(callerPromise, realConnectPromise, initPromise);
   }
 
   protected abstract void onRealConnect(ChannelHandlerContext ctx);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,17 @@
  */
 package com.datastax.oss.driver.internal.core.control;
 
-import com.datastax.oss.driver.api.core.addresstranslation.AddressTranslator;
-import com.datastax.oss.driver.api.core.addresstranslation.PassThroughAddressTranslator;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.when;
+
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
+import com.datastax.oss.driver.api.core.config.DriverConfig;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.connection.ReconnectionPolicy;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.internal.core.channel.ChannelFactory;
@@ -26,40 +34,37 @@ import com.datastax.oss.driver.internal.core.channel.DriverChannelOptions;
 import com.datastax.oss.driver.internal.core.context.EventBus;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.context.NettyOptions;
+import com.datastax.oss.driver.internal.core.metadata.DefaultEndPoint;
 import com.datastax.oss.driver.internal.core.metadata.DefaultNode;
 import com.datastax.oss.driver.internal.core.metadata.LoadBalancingPolicyWrapper;
 import com.datastax.oss.driver.internal.core.metadata.MetadataManager;
-import com.google.common.util.concurrent.Uninterruptibles;
+import com.datastax.oss.driver.internal.core.metadata.TestNodeFactory;
+import com.datastax.oss.driver.internal.core.metrics.MetricsFactory;
+import io.netty.channel.Channel;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.EventLoop;
-import io.netty.util.concurrent.Future;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Exchanger;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.junit.After;
 import org.junit.Before;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.fail;
-import static org.mockito.ArgumentMatchers.any;
+import org.mockito.verification.VerificationWithTimeout;
 
 abstract class ControlConnectionTestBase {
   protected static final InetSocketAddress ADDRESS1 = new InetSocketAddress("127.0.0.1", 9042);
-  protected static final InetSocketAddress ADDRESS2 = new InetSocketAddress("127.0.0.2", 9042);
-  protected static final DefaultNode NODE1 = new DefaultNode(ADDRESS1);
-  protected static final DefaultNode NODE2 = new DefaultNode(ADDRESS2);
+
+  /** How long we wait when verifying mocks for async invocations */
+  protected static final VerificationWithTimeout VERIFY_TIMEOUT = timeout(500);
 
   @Mock protected InternalDriverContext context;
+  @Mock protected DriverConfig config;
+  @Mock protected DriverExecutionProfile defaultProfile;
   @Mock protected ReconnectionPolicy reconnectionPolicy;
   @Mock protected ReconnectionPolicy.ReconnectionSchedule reconnectionSchedule;
   @Mock protected NettyOptions nettyOptions;
@@ -69,7 +74,10 @@ abstract class ControlConnectionTestBase {
   protected Exchanger<CompletableFuture<DriverChannel>> channelFactoryFuture;
   @Mock protected LoadBalancingPolicyWrapper loadBalancingPolicyWrapper;
   @Mock protected MetadataManager metadataManager;
-  protected AddressTranslator addressTranslator;
+  @Mock protected MetricsFactory metricsFactory;
+
+  protected DefaultNode node1;
+  protected DefaultNode node2;
 
   protected ControlConnection controlConnection;
 
@@ -79,14 +87,14 @@ abstract class ControlConnectionTestBase {
 
     adminEventLoopGroup = new DefaultEventLoopGroup(1);
 
-    Mockito.when(context.nettyOptions()).thenReturn(nettyOptions);
-    Mockito.when(nettyOptions.adminEventExecutorGroup()).thenReturn(adminEventLoopGroup);
-    eventBus = Mockito.spy(new EventBus("test"));
-    Mockito.when(context.eventBus()).thenReturn(eventBus);
-    Mockito.when(context.channelFactory()).thenReturn(channelFactory);
+    when(context.getNettyOptions()).thenReturn(nettyOptions);
+    when(nettyOptions.adminEventExecutorGroup()).thenReturn(adminEventLoopGroup);
+    eventBus = spy(new EventBus("test"));
+    when(context.getEventBus()).thenReturn(eventBus);
+    when(context.getChannelFactory()).thenReturn(channelFactory);
 
     channelFactoryFuture = new Exchanger<>();
-    Mockito.when(channelFactory.connect(any(SocketAddress.class), any(DriverChannelOptions.class)))
+    when(channelFactory.connect(any(Node.class), any(DriverChannelOptions.class)))
         .thenAnswer(
             invocation -> {
               CompletableFuture<DriverChannel> channelFuture = new CompletableFuture<>();
@@ -94,29 +102,39 @@ abstract class ControlConnectionTestBase {
               return channelFuture;
             });
 
-    Mockito.when(context.reconnectionPolicy()).thenReturn(reconnectionPolicy);
-    Mockito.when(reconnectionPolicy.newSchedule()).thenReturn(reconnectionSchedule);
+    when(context.getConfig()).thenReturn(config);
+    when(config.getDefaultProfile()).thenReturn(defaultProfile);
+    when(defaultProfile.getBoolean(DefaultDriverOption.RECONNECT_ON_INIT)).thenReturn(false);
+
+    when(context.getReconnectionPolicy()).thenReturn(reconnectionPolicy);
+    // Child classes only cover "runtime" reconnections when the driver is already initialized
+    when(reconnectionPolicy.newControlConnectionSchedule(false)).thenReturn(reconnectionSchedule);
     // By default, set a large reconnection delay. Tests that care about reconnection will override
     // it.
-    Mockito.when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofDays(1));
+    when(reconnectionSchedule.nextDelay()).thenReturn(Duration.ofDays(1));
 
-    Mockito.when(context.loadBalancingPolicyWrapper()).thenReturn(loadBalancingPolicyWrapper);
-    mockQueryPlan(NODE1, NODE2);
+    when(context.getLoadBalancingPolicyWrapper()).thenReturn(loadBalancingPolicyWrapper);
 
-    Mockito.when(metadataManager.refreshNodes())
+    when(context.getMetricsFactory()).thenReturn(metricsFactory);
+    node1 = TestNodeFactory.newNode(1, context);
+    node2 = TestNodeFactory.newNode(2, context);
+    mockQueryPlan(node1, node2);
+
+    when(metadataManager.refreshNodes()).thenReturn(CompletableFuture.completedFuture(null));
+    when(metadataManager.refreshSchema(anyString(), anyBoolean(), anyBoolean()))
         .thenReturn(CompletableFuture.completedFuture(null));
-    Mockito.when(context.metadataManager()).thenReturn(metadataManager);
+    when(context.getMetadataManager()).thenReturn(metadataManager);
 
-    addressTranslator =
-        Mockito.spy(
-            new PassThroughAddressTranslator(context, CoreDriverOption.ADDRESS_TRANSLATOR_ROOT));
-    Mockito.when(context.addressTranslator()).thenReturn(addressTranslator);
+    when(context.getConfig()).thenReturn(config);
+    when(config.getDefaultProfile()).thenReturn(defaultProfile);
+    when(defaultProfile.getBoolean(DefaultDriverOption.CONNECTION_WARN_INIT_ERROR))
+        .thenReturn(false);
 
     controlConnection = new ControlConnection(context);
   }
 
   protected void mockQueryPlan(Node... nodes) {
-    Mockito.when(loadBalancingPolicyWrapper.newQueryPlan())
+    when(loadBalancingPolicyWrapper.newQueryPlan())
         .thenAnswer(
             i -> {
               ConcurrentLinkedQueue<Node> queryPlan = new ConcurrentLinkedQueue<>();
@@ -133,37 +151,26 @@ abstract class ControlConnectionTestBase {
   }
 
   protected DriverChannel newMockDriverChannel(int id) {
-    DriverChannel channel = Mockito.mock(DriverChannel.class);
+    DriverChannel driverChannel = mock(DriverChannel.class);
+    Channel channel = mock(Channel.class);
     EventLoop adminExecutor = adminEventLoopGroup.next();
-    DefaultChannelPromise closeFuture = new DefaultChannelPromise(null, adminExecutor);
-    Mockito.when(channel.close())
+    DefaultChannelPromise closeFuture = new DefaultChannelPromise(channel, adminExecutor);
+    when(driverChannel.close())
         .thenAnswer(
             i -> {
               closeFuture.trySuccess(null);
               return closeFuture;
             });
-    Mockito.when(channel.forceClose())
+    when(driverChannel.forceClose())
         .thenAnswer(
             i -> {
               closeFuture.trySuccess(null);
               return closeFuture;
             });
-    Mockito.when(channel.closeFuture()).thenReturn(closeFuture);
-    Mockito.when(channel.toString()).thenReturn("channel" + id);
-    Mockito.when(channel.remoteAddress()).thenReturn(new InetSocketAddress("127.0.0." + id, 9042));
-    return channel;
-  }
-
-  // Wait for all the tasks on the admin executor to complete.
-  protected void waitForPendingAdminTasks() {
-    // This works because the event loop group is single-threaded
-    Future<?> f = adminEventLoopGroup.schedule(() -> null, 5, TimeUnit.NANOSECONDS);
-    try {
-      Uninterruptibles.getUninterruptibly(f, 100, TimeUnit.MILLISECONDS);
-    } catch (ExecutionException e) {
-      fail("unexpected error", e.getCause());
-    } catch (TimeoutException e) {
-      fail("timed out while waiting for admin tasks to complete", e);
-    }
+    when(driverChannel.closeFuture()).thenReturn(closeFuture);
+    when(driverChannel.toString()).thenReturn("channel" + id);
+    when(driverChannel.getEndPoint())
+        .thenReturn(new DefaultEndPoint(new InetSocketAddress("127.0.0." + id, 9042)));
+    return driverChannel;
   }
 }

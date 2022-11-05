@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,21 +20,29 @@ import com.datastax.oss.driver.api.core.data.GettableByIndex;
 import com.datastax.oss.driver.api.core.data.TupleValue;
 import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.type.codec.TypeCodec;
-import com.google.common.reflect.TypeParameter;
-import com.google.common.reflect.TypeResolver;
-import com.google.common.reflect.TypeToken;
+import com.datastax.oss.driver.shaded.guava.common.primitives.Primitives;
+import com.datastax.oss.driver.shaded.guava.common.reflect.TypeParameter;
+import com.datastax.oss.driver.shaded.guava.common.reflect.TypeResolver;
+import com.datastax.oss.driver.shaded.guava.common.reflect.TypeToken;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import net.jcip.annotations.Immutable;
 
 /**
  * Runtime representation of a generic Java type.
@@ -75,6 +83,7 @@ import java.util.UUID;
  * {@code TypeToken} is not used directly is because Guava is not exposed in the driver's public API
  * (it's used internally, but shaded).
  */
+@Immutable
 public class GenericType<T> {
 
   public static final GenericType<Boolean> BOOLEAN = of(Boolean.class);
@@ -85,8 +94,10 @@ public class GenericType<T> {
   public static final GenericType<Long> LONG = of(Long.class);
   public static final GenericType<Short> SHORT = of(Short.class);
   public static final GenericType<Instant> INSTANT = of(Instant.class);
+  public static final GenericType<ZonedDateTime> ZONED_DATE_TIME = of(ZonedDateTime.class);
   public static final GenericType<LocalDate> LOCAL_DATE = of(LocalDate.class);
   public static final GenericType<LocalTime> LOCAL_TIME = of(LocalTime.class);
+  public static final GenericType<LocalDateTime> LOCAL_DATE_TIME = of(LocalDateTime.class);
   public static final GenericType<ByteBuffer> BYTE_BUFFER = of(ByteBuffer.class);
   public static final GenericType<String> STRING = of(String.class);
   public static final GenericType<BigInteger> BIG_INTEGER = of(BigInteger.class);
@@ -96,51 +107,90 @@ public class GenericType<T> {
   public static final GenericType<CqlDuration> CQL_DURATION = of(CqlDuration.class);
   public static final GenericType<TupleValue> TUPLE_VALUE = of(TupleValue.class);
   public static final GenericType<UdtValue> UDT_VALUE = of(UdtValue.class);
+  public static final GenericType<Duration> DURATION = of(Duration.class);
 
-  public static <T> GenericType<T> of(Class<T> type) {
+  @NonNull
+  public static <T> GenericType<T> of(@NonNull Class<T> type) {
     return new SimpleGenericType<>(type);
   }
 
-  public static GenericType<?> of(java.lang.reflect.Type type) {
+  @NonNull
+  public static GenericType<?> of(@NonNull java.lang.reflect.Type type) {
     return new GenericType<>(TypeToken.of(type));
   }
 
-  public static <T> GenericType<List<T>> listOf(Class<T> elementType) {
+  @NonNull
+  public static <T> GenericType<List<T>> listOf(@NonNull Class<T> elementType) {
     TypeToken<List<T>> token =
         new TypeToken<List<T>>() {}.where(new TypeParameter<T>() {}, TypeToken.of(elementType));
     return new GenericType<>(token);
   }
 
-  public static <T> GenericType<List<T>> listOf(GenericType<T> elementType) {
+  @NonNull
+  public static <T> GenericType<List<T>> listOf(@NonNull GenericType<T> elementType) {
     TypeToken<List<T>> token =
         new TypeToken<List<T>>() {}.where(new TypeParameter<T>() {}, elementType.token);
     return new GenericType<>(token);
   }
 
-  public static <T> GenericType<Set<T>> setOf(Class<T> elementType) {
+  @NonNull
+  public static <T> GenericType<Set<T>> setOf(@NonNull Class<T> elementType) {
     TypeToken<Set<T>> token =
         new TypeToken<Set<T>>() {}.where(new TypeParameter<T>() {}, TypeToken.of(elementType));
     return new GenericType<>(token);
   }
 
-  public static <T> GenericType<Set<T>> setOf(GenericType<T> elementType) {
+  @NonNull
+  public static <T> GenericType<Set<T>> setOf(@NonNull GenericType<T> elementType) {
     TypeToken<Set<T>> token =
         new TypeToken<Set<T>>() {}.where(new TypeParameter<T>() {}, elementType.token);
     return new GenericType<>(token);
   }
 
-  public static <K, V> GenericType<Map<K, V>> mapOf(Class<K> keyType, Class<V> valueType) {
+  @NonNull
+  public static <K, V> GenericType<Map<K, V>> mapOf(
+      @NonNull Class<K> keyType, @NonNull Class<V> valueType) {
     TypeToken<Map<K, V>> token =
         new TypeToken<Map<K, V>>() {}.where(new TypeParameter<K>() {}, TypeToken.of(keyType))
             .where(new TypeParameter<V>() {}, TypeToken.of(valueType));
     return new GenericType<>(token);
   }
 
+  @NonNull
   public static <K, V> GenericType<Map<K, V>> mapOf(
-      GenericType<K> keyType, GenericType<V> valueType) {
+      @NonNull GenericType<K> keyType, @NonNull GenericType<V> valueType) {
     TypeToken<Map<K, V>> token =
         new TypeToken<Map<K, V>>() {}.where(new TypeParameter<K>() {}, keyType.token)
             .where(new TypeParameter<V>() {}, valueType.token);
+    return new GenericType<>(token);
+  }
+
+  @NonNull
+  public static <T> GenericType<T[]> arrayOf(@NonNull Class<T> componentType) {
+    TypeToken<T[]> token =
+        new TypeToken<T[]>() {}.where(new TypeParameter<T>() {}, TypeToken.of(componentType));
+    return new GenericType<>(token);
+  }
+
+  @NonNull
+  public static <T> GenericType<T[]> arrayOf(@NonNull GenericType<T> componentType) {
+    TypeToken<T[]> token =
+        new TypeToken<T[]>() {}.where(new TypeParameter<T>() {}, componentType.token);
+    return new GenericType<>(token);
+  }
+
+  @NonNull
+  public static <T> GenericType<Optional<T>> optionalOf(@NonNull Class<T> componentType) {
+    TypeToken<Optional<T>> token =
+        new TypeToken<Optional<T>>() {}.where(
+            new TypeParameter<T>() {}, TypeToken.of(componentType));
+    return new GenericType<>(token);
+  }
+
+  @NonNull
+  public static <T> GenericType<Optional<T>> optionalOf(@NonNull GenericType<T> componentType) {
+    TypeToken<Optional<T>> token =
+        new TypeToken<Optional<T>>() {}.where(new TypeParameter<T>() {}, componentType.token);
     return new GenericType<>(token);
   }
 
@@ -155,11 +205,69 @@ public class GenericType<T> {
   }
 
   /**
+   * Returns true if this type is a supertype of the given {@code type}. "Supertype" is defined
+   * according to <a
+   * href="http://docs.oracle.com/javase/specs/jls/se8/html/jls-4.html#jls-4.5.1">the rules for type
+   * arguments</a> introduced with Java generics.
+   */
+  public final boolean isSupertypeOf(@NonNull GenericType<?> type) {
+    return token.isSupertypeOf(type.token);
+  }
+
+  /**
+   * Returns true if this type is a subtype of the given {@code type}. "Subtype" is defined
+   * according to <a
+   * href="http://docs.oracle.com/javase/specs/jls/se8/html/jls-4.html#jls-4.5.1">the rules for type
+   * arguments</a> introduced with Java generics.
+   */
+  public final boolean isSubtypeOf(@NonNull GenericType<?> type) {
+    return token.isSubtypeOf(type.token);
+  }
+
+  /**
+   * Returns true if this type is known to be an array type, such as {@code int[]}, {@code T[]},
+   * {@code <? extends Map<String, Integer>[]>} etc.
+   */
+  public final boolean isArray() {
+    return token.isArray();
+  }
+
+  /** Returns true if this type is one of the nine primitive types (including {@code void}). */
+  public final boolean isPrimitive() {
+    return token.isPrimitive();
+  }
+
+  /**
+   * Returns the corresponding wrapper type if this is a primitive type; otherwise returns {@code
+   * this} itself. Idempotent.
+   */
+  @NonNull
+  public final GenericType<T> wrap() {
+    if (isPrimitive()) {
+      return new GenericType<>(token.wrap());
+    }
+    return this;
+  }
+
+  /**
+   * Returns the corresponding primitive type if this is a wrapper type; otherwise returns {@code
+   * this} itself. Idempotent.
+   */
+  @NonNull
+  public final GenericType<T> unwrap() {
+    if (Primitives.allWrapperTypes().contains(token.getRawType())) {
+      return new GenericType<>(token.unwrap());
+    }
+    return this;
+  }
+
+  /**
    * Substitutes a free type variable with an actual type. See {@link GenericType this class's
    * javadoc} for an example.
    */
+  @NonNull
   public final <X> GenericType<T> where(
-      GenericTypeParameter<X> freeVariable, GenericType<X> actualType) {
+      @NonNull GenericTypeParameter<X> freeVariable, @NonNull GenericType<X> actualType) {
     TypeResolver resolver =
         new TypeResolver().where(freeVariable.getTypeVariable(), actualType.__getToken().getType());
     Type resolvedType = resolver.resolveType(this.token.getType());
@@ -172,8 +280,68 @@ public class GenericType<T> {
    * Substitutes a free type variable with an actual type. See {@link GenericType this class's
    * javadoc} for an example.
    */
-  public final <X> GenericType<T> where(GenericTypeParameter<X> freeVariable, Class<X> actualType) {
+  @NonNull
+  public final <X> GenericType<T> where(
+      @NonNull GenericTypeParameter<X> freeVariable, @NonNull Class<X> actualType) {
     return where(freeVariable, GenericType.of(actualType));
+  }
+
+  /**
+   * Returns the array component type if this type represents an array ({@code int[]}, {@code T[]},
+   * {@code <? extends Map<String, Integer>[]>} etc.), or else {@code null} is returned.
+   */
+  @Nullable
+  @SuppressWarnings("unchecked")
+  public final GenericType<?> getComponentType() {
+    TypeToken<?> componentTypeToken = token.getComponentType();
+    return (componentTypeToken == null) ? null : new GenericType(componentTypeToken);
+  }
+
+  /**
+   * Returns the raw type of {@code T}. Formally speaking, if {@code T} is returned by {@link
+   * java.lang.reflect.Method#getGenericReturnType}, the raw type is what's returned by {@link
+   * java.lang.reflect.Method#getReturnType} of the same method object. Specifically:
+   *
+   * <ul>
+   *   <li>If {@code T} is a {@code Class} itself, {@code T} itself is returned.
+   *   <li>If {@code T} is a parameterized type, the raw type of the parameterized type is returned.
+   *   <li>If {@code T} is an array type , the returned type is the corresponding array class. For
+   *       example: {@code List<Integer>[] => List[]}.
+   *   <li>If {@code T} is a type variable or a wildcard type, the raw type of the first upper bound
+   *       is returned. For example: {@code <X extends Foo> => Foo}.
+   * </ul>
+   */
+  @NonNull
+  public Class<? super T> getRawType() {
+    return token.getRawType();
+  }
+
+  /**
+   * Returns the generic form of {@code superclass}. For example, if this is {@code
+   * ArrayList<String>}, {@code Iterable<String>} is returned given the input {@code
+   * Iterable.class}.
+   */
+  @SuppressWarnings("unchecked")
+  @NonNull
+  public final GenericType<? super T> getSupertype(@NonNull Class<? super T> superclass) {
+    return new GenericType(token.getSupertype(superclass));
+  }
+
+  /**
+   * Returns subtype of {@code this} with {@code subclass} as the raw class. For example, if this is
+   * {@code Iterable<String>} and {@code subclass} is {@code List}, {@code List<String>} is
+   * returned.
+   */
+  @SuppressWarnings("unchecked")
+  @NonNull
+  public final GenericType<? extends T> getSubtype(@NonNull Class<?> subclass) {
+    return new GenericType(token.getSubtype(subclass));
+  }
+
+  /** Returns the represented type. */
+  @NonNull
+  public final Type getType() {
+    return token.getType();
   }
 
   /**
@@ -181,7 +349,10 @@ public class GenericType<T> {
    *
    * <p>It leaks a shaded type. This should be part of the internal API, but due to internal
    * implementation details it has to be exposed here.
+   *
+   * @leaks-private-api
    */
+  @NonNull
   public TypeToken<T> __getToken() {
     return token;
   }

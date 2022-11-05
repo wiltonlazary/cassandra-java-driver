@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,13 +15,13 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.Message;
 import io.netty.channel.embedded.EmbeddedChannel;
 import java.util.Collections;
 import org.junit.Before;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Infrastructure for channel handler test.

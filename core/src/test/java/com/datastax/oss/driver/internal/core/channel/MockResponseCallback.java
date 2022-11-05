@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,21 +16,22 @@
 package com.datastax.oss.driver.internal.core.channel;
 
 import com.datastax.oss.protocol.internal.Frame;
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.Queue;
+import java.util.function.Predicate;
 
 class MockResponseCallback implements ResponseCallback {
-  private final boolean holdStreamId;
-  private final Queue<Object> responses = new LinkedList<>();
+  private final Queue<Object> responses = new ArrayDeque<>();
+  private final Predicate<Frame> isLastResponse;
 
   volatile int streamId = -1;
 
   MockResponseCallback() {
-    this(false);
+    this(f -> true);
   }
 
-  MockResponseCallback(boolean holdStreamId) {
-    this.holdStreamId = holdStreamId;
+  MockResponseCallback(Predicate<Frame> isLastResponse) {
+    this.isLastResponse = isLastResponse;
   }
 
   @Override
@@ -44,8 +45,8 @@ class MockResponseCallback implements ResponseCallback {
   }
 
   @Override
-  public boolean holdStreamId() {
-    return holdStreamId;
+  public boolean isLastResponse(Frame responseFrame) {
+    return isLastResponse.test(responseFrame);
   }
 
   @Override

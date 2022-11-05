@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,9 @@
  */
 package com.datastax.oss.driver.internal.core.channel;
 
-import com.datastax.oss.driver.api.core.CoreProtocolVersion;
+import static com.datastax.oss.driver.Assertions.assertThat;
+
+import com.datastax.oss.driver.api.core.DefaultProtocolVersion;
 import com.datastax.oss.driver.api.core.connection.ClosedConnectionException;
 import com.datastax.oss.protocol.internal.Frame;
 import com.datastax.oss.protocol.internal.request.Query;
@@ -25,15 +27,13 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelPromise;
 import io.netty.util.concurrent.Future;
 import java.util.AbstractMap;
-import java.util.LinkedList;
+import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.Queue;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class DriverChannelTest extends ChannelHandlerTestBase {
   public static final int SET_KEYSPACE_TIMEOUT_MILLIS = 100;
@@ -52,16 +52,17 @@ public class DriverChannelTest extends ChannelHandlerTestBase {
         .pipeline()
         .addLast(
             new InFlightHandler(
-                CoreProtocolVersion.V3,
+                DefaultProtocolVersion.V3,
                 streamIds,
                 Integer.MAX_VALUE,
                 SET_KEYSPACE_TIMEOUT_MILLIS,
-                null,
                 channel.newPromise(),
                 null,
                 "test"));
     writeCoalescer = new MockWriteCoalescer();
-    driverChannel = new DriverChannel(channel, writeCoalescer, null, CoreProtocolVersion.V3);
+    driverChannel =
+        new DriverChannel(
+            new EmbeddedEndPoint(), channel, writeCoalescer, DefaultProtocolVersion.V3);
   }
 
   /**
@@ -143,7 +144,7 @@ public class DriverChannelTest extends ChannelHandlerTestBase {
   // Simple implementation that holds all the writes, and flushes them when it's explicitly
   // triggered.
   private class MockWriteCoalescer implements WriteCoalescer {
-    private Queue<Map.Entry<Object, ChannelPromise>> messages = new LinkedList<>();
+    private Queue<Map.Entry<Object, ChannelPromise>> messages = new ArrayDeque<>();
 
     @Override
     public ChannelFuture writeAndFlush(Channel channel, Object message) {

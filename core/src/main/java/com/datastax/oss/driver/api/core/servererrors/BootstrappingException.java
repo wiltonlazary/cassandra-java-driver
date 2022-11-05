@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,11 @@ package com.datastax.oss.driver.api.core.servererrors;
 
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.DriverException;
+import com.datastax.oss.driver.api.core.cql.ExecutionInfo;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Thrown when the coordinator was bootstrapping when it received a query.
@@ -29,16 +32,21 @@ import com.datastax.oss.driver.api.core.retry.RetryPolicy;
  */
 public class BootstrappingException extends QueryExecutionException {
 
-  public BootstrappingException(Node coordinator) {
-    super(coordinator, String.format("%s is bootstrapping", coordinator), false);
+  public BootstrappingException(@NonNull Node coordinator) {
+    this(coordinator, String.format("%s is bootstrapping", coordinator), null, false);
   }
 
-  private BootstrappingException(Node coordinator, String message, boolean writableStackTrace) {
-    super(coordinator, message, writableStackTrace);
+  private BootstrappingException(
+      @NonNull Node coordinator,
+      @NonNull String message,
+      @Nullable ExecutionInfo executionInfo,
+      boolean writableStackTrace) {
+    super(coordinator, message, executionInfo, writableStackTrace);
   }
 
+  @NonNull
   @Override
   public DriverException copy() {
-    return new BootstrappingException(getCoordinator(), getMessage(), true);
+    return new BootstrappingException(getCoordinator(), getMessage(), getExecutionInfo(), true);
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,36 @@
  */
 package com.datastax.oss.driver.internal.core.session;
 
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
-import com.datastax.oss.driver.internal.core.adminrequest.AdminRequestHandler;
+import com.datastax.oss.driver.api.core.connection.BusyConnectionException;
+import com.datastax.oss.driver.api.core.session.throttling.RequestThrottler;
 import com.datastax.oss.driver.internal.core.adminrequest.AdminResult;
+import com.datastax.oss.driver.internal.core.adminrequest.AdminRow;
+import com.datastax.oss.driver.internal.core.adminrequest.ThrottledAdminRequestHandler;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
+import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.cql.CqlRequestHandler;
+import com.datastax.oss.driver.internal.core.metrics.SessionMetricUpdater;
 import com.datastax.oss.driver.internal.core.pool.ChannelPool;
+import com.datastax.oss.driver.internal.core.util.concurrent.CompletableFutures;
+import com.datastax.oss.driver.internal.core.util.concurrent.RunOrSchedule;
+import com.datastax.oss.driver.shaded.guava.common.annotations.VisibleForTesting;
 import com.datastax.oss.protocol.internal.Message;
 import com.datastax.oss.protocol.internal.request.Prepare;
 import com.datastax.oss.protocol.internal.request.Query;
 import com.datastax.oss.protocol.internal.util.Bytes;
-import com.google.common.annotations.VisibleForTesting;
+import io.netty.util.concurrent.EventExecutor;
 import java.nio.ByteBuffer;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import net.jcip.annotations.ThreadSafe;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +59,7 @@ import org.slf4j.LoggerFactory;
  * <p>Logically this code belongs to {@link DefaultSession}, but it was extracted for modularity and
  * testability.
  */
+@ThreadSafe
 class ReprepareOnUp {
 
   private static final Logger LOG = LoggerFactory.getLogger(ReprepareOnUp.class);
@@ -57,16 +67,19 @@ class ReprepareOnUp {
       new Query("SELECT prepared_id FROM system.prepared_statements");
 
   private final String logPrefix;
-  private final DriverChannel channel;
+  private final ChannelPool pool;
+  private final EventExecutor adminExecutor;
   private final Map<ByteBuffer, RepreparePayload> repreparePayloads;
   private final Runnable whenPrepared;
   private final boolean checkSystemTable;
   private final int maxStatements;
   private final int maxParallelism;
   private final Duration timeout;
+  private final RequestThrottler throttler;
+  private final SessionMetricUpdater metricUpdater;
 
-  // After the constructor, everything happens on the channel's event loop, so these fields do not
-  // need any synchronization.
+  // After the constructor, everything happens on adminExecutor, so these fields do not need any
+  // synchronization.
   private Set<ByteBuffer> serverKnownIds;
   private Queue<RepreparePayload> toReprepare;
   private int runningWorkers;
@@ -74,34 +87,37 @@ class ReprepareOnUp {
   ReprepareOnUp(
       String logPrefix,
       ChannelPool pool,
+      EventExecutor adminExecutor,
       Map<ByteBuffer, RepreparePayload> repreparePayloads,
-      DriverConfig config,
+      InternalDriverContext context,
       Runnable whenPrepared) {
 
     this.logPrefix = logPrefix;
-    this.channel = pool.next();
+    this.pool = pool;
+    this.adminExecutor = adminExecutor;
     this.repreparePayloads = repreparePayloads;
     this.whenPrepared = whenPrepared;
+    this.throttler = context.getRequestThrottler();
 
+    DriverConfig config = context.getConfig();
     this.checkSystemTable =
-        config.getDefaultProfile().getBoolean(CoreDriverOption.REPREPARE_CHECK_SYSTEM_TABLE);
-    this.timeout = config.getDefaultProfile().getDuration(CoreDriverOption.REPREPARE_TIMEOUT);
+        config.getDefaultProfile().getBoolean(DefaultDriverOption.REPREPARE_CHECK_SYSTEM_TABLE);
+    this.timeout = config.getDefaultProfile().getDuration(DefaultDriverOption.REPREPARE_TIMEOUT);
     this.maxStatements =
-        config.getDefaultProfile().getInt(CoreDriverOption.REPREPARE_MAX_STATEMENTS);
+        config.getDefaultProfile().getInt(DefaultDriverOption.REPREPARE_MAX_STATEMENTS);
     this.maxParallelism =
-        config.getDefaultProfile().getInt(CoreDriverOption.REPREPARE_MAX_PARALLELISM);
+        config.getDefaultProfile().getInt(DefaultDriverOption.REPREPARE_MAX_PARALLELISM);
+
+    this.metricUpdater = context.getMetricsFactory().getSessionUpdater();
   }
 
   void start() {
     if (repreparePayloads.isEmpty()) {
       LOG.debug("[{}] No statements to reprepare, done", logPrefix);
       whenPrepared.run();
-    } else if (this.channel == null) {
-      // Should not happen, but handle cleanly
-      LOG.debug("[{}] No channel available to reprepare, done", logPrefix);
-      whenPrepared.run();
     } else {
-      if (LOG.isDebugEnabled()) { // check because ConcurrentMap.size is not a constant operation
+      // Check log level because ConcurrentMap.size is not a constant operation
+      if (LOG.isDebugEnabled()) {
         LOG.debug(
             "[{}] {} statements to reprepare on newly added/up node",
             logPrefix,
@@ -110,20 +126,24 @@ class ReprepareOnUp {
       if (checkSystemTable) {
         LOG.debug("[{}] Checking which statements the server knows about", logPrefix);
         queryAsync(QUERY_SERVER_IDS, Collections.emptyMap(), "QUERY system.prepared_statements")
-            .whenComplete(this::gatherServerIds);
+            .whenCompleteAsync(this::gatherServerIds, adminExecutor);
       } else {
         LOG.debug(
             "[{}] {} is disabled, repreparing directly",
             logPrefix,
-            CoreDriverOption.REPREPARE_CHECK_SYSTEM_TABLE.getPath());
-        serverKnownIds = Collections.emptySet();
-        gatherPayloadsToReprepare();
+            DefaultDriverOption.REPREPARE_CHECK_SYSTEM_TABLE.getPath());
+        RunOrSchedule.on(
+            adminExecutor,
+            () -> {
+              serverKnownIds = Collections.emptySet();
+              gatherPayloadsToReprepare();
+            });
       }
     }
   }
 
   private void gatherServerIds(AdminResult rows, Throwable error) {
-    assert channel.eventLoop().inEventLoop();
+    assert adminExecutor.inEventLoop();
     if (serverKnownIds == null) {
       serverKnownIds = new HashSet<>();
     }
@@ -134,12 +154,12 @@ class ReprepareOnUp {
           error.toString());
       gatherPayloadsToReprepare();
     } else {
-      for (AdminResult.Row row : rows) {
+      for (AdminRow row : rows) {
         serverKnownIds.add(row.getByteBuffer("prepared_id"));
       }
       if (rows.hasNextPage()) {
         LOG.debug("[{}] system.prepared_statements has more pages", logPrefix);
-        rows.nextPage().whenComplete(this::gatherServerIds);
+        rows.nextPage().whenCompleteAsync(this::gatherServerIds, adminExecutor);
       } else {
         LOG.debug("[{}] Gathered {} server ids, proceeding", logPrefix, serverKnownIds.size());
         gatherPayloadsToReprepare();
@@ -148,8 +168,8 @@ class ReprepareOnUp {
   }
 
   private void gatherPayloadsToReprepare() {
-    assert channel.eventLoop().inEventLoop();
-    toReprepare = new LinkedList<>();
+    assert adminExecutor.inEventLoop();
+    toReprepare = new ArrayDeque<>();
     for (RepreparePayload payload : repreparePayloads.values()) {
       if (serverKnownIds.contains(payload.id)) {
         LOG.trace(
@@ -180,7 +200,7 @@ class ReprepareOnUp {
   }
 
   private void startWorkers() {
-    assert channel.eventLoop().inEventLoop();
+    assert adminExecutor.inEventLoop();
     runningWorkers = Math.min(maxParallelism, toReprepare.size());
     LOG.debug(
         "[{}] Repreparing {} statements with {} parallel workers",
@@ -193,7 +213,7 @@ class ReprepareOnUp {
   }
 
   private void startWorker() {
-    assert channel.eventLoop().inEventLoop();
+    assert adminExecutor.inEventLoop();
     if (toReprepare.isEmpty()) {
       runningWorkers -= 1;
       if (runningWorkers == 0) {
@@ -202,24 +222,55 @@ class ReprepareOnUp {
       }
     } else {
       RepreparePayload payload = toReprepare.poll();
-      queryAsync(
-              new Prepare(payload.query),
-              payload.customPayload,
-              String.format("Reprepare '%s'", payload.query))
-          .handle(
+      prepareAsync(
+              new Prepare(
+                  payload.query, (payload.keyspace == null ? null : payload.keyspace.asInternal())),
+              payload.customPayload)
+          .handleAsync(
               (result, error) -> {
                 // Don't log, AdminRequestHandler does already
                 startWorker();
                 return null;
-              });
+              },
+              adminExecutor);
     }
   }
 
   @VisibleForTesting
   protected CompletionStage<AdminResult> queryAsync(
       Message message, Map<String, ByteBuffer> customPayload, String debugString) {
-    AdminRequestHandler reprepareHandler =
-        new AdminRequestHandler(channel, message, timeout, logPrefix, debugString);
-    return reprepareHandler.start(customPayload);
+    DriverChannel channel = pool.next();
+    if (channel == null) {
+      return CompletableFutures.failedFuture(
+          new BusyConnectionException("Found no channel to execute reprepare query"));
+    } else {
+      ThrottledAdminRequestHandler<AdminResult> reprepareHandler =
+          ThrottledAdminRequestHandler.query(
+              channel,
+              false,
+              message,
+              customPayload,
+              timeout,
+              throttler,
+              metricUpdater,
+              logPrefix,
+              debugString);
+      return reprepareHandler.start();
+    }
+  }
+
+  @VisibleForTesting
+  protected CompletionStage<ByteBuffer> prepareAsync(
+      Message message, Map<String, ByteBuffer> customPayload) {
+    DriverChannel channel = pool.next();
+    if (channel == null) {
+      return CompletableFutures.failedFuture(
+          new BusyConnectionException("Found no channel to execute reprepare query"));
+    } else {
+      ThrottledAdminRequestHandler<ByteBuffer> reprepareHandler =
+          ThrottledAdminRequestHandler.prepare(
+              channel, false, message, customPayload, timeout, throttler, metricUpdater, logPrefix);
+      return reprepareHandler.start();
+    }
   }
 }

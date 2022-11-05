@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,24 +15,43 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
-import com.datastax.oss.driver.api.core.ConsistencyLevel;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.CqlIdentifier;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.DefaultConsistencyLevel;
+import com.datastax.oss.driver.api.core.ProtocolVersion;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.config.DriverConfig;
-import com.datastax.oss.driver.api.core.config.DriverConfigProfile;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
+import com.datastax.oss.driver.api.core.cql.Statement;
 import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.api.core.metrics.SessionMetric;
 import com.datastax.oss.driver.api.core.retry.RetryPolicy;
 import com.datastax.oss.driver.api.core.session.Request;
+import com.datastax.oss.driver.api.core.session.Session;
 import com.datastax.oss.driver.api.core.specex.SpeculativeExecutionPolicy;
 import com.datastax.oss.driver.api.core.time.TimestampGenerator;
+import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
+import com.datastax.oss.driver.internal.core.DefaultConsistencyLevelRegistry;
+import com.datastax.oss.driver.internal.core.ProtocolFeature;
+import com.datastax.oss.driver.internal.core.ProtocolVersionRegistry;
 import com.datastax.oss.driver.internal.core.channel.DriverChannel;
 import com.datastax.oss.driver.internal.core.context.InternalDriverContext;
 import com.datastax.oss.driver.internal.core.context.NettyOptions;
+import com.datastax.oss.driver.internal.core.metadata.DefaultMetadata;
 import com.datastax.oss.driver.internal.core.metadata.LoadBalancingPolicyWrapper;
+import com.datastax.oss.driver.internal.core.metrics.SessionMetricUpdater;
 import com.datastax.oss.driver.internal.core.pool.ChannelPool;
+import com.datastax.oss.driver.internal.core.servererrors.DefaultWriteTypeRegistry;
 import com.datastax.oss.driver.internal.core.session.DefaultSession;
-import com.datastax.oss.driver.internal.core.type.codec.registry.DefaultCodecRegistry;
-import com.datastax.oss.driver.internal.core.util.concurrent.ScheduledTaskCapturingEventLoop;
+import com.datastax.oss.driver.internal.core.session.throttling.PassThroughRequestThrottler;
+import com.datastax.oss.driver.internal.core.tracker.NoopRequestTracker;
+import com.datastax.oss.driver.internal.core.util.concurrent.CapturingTimer;
+import com.datastax.oss.driver.internal.core.util.concurrent.CapturingTimer.CapturedTimeout;
 import com.datastax.oss.protocol.internal.Frame;
 import io.netty.channel.EventLoopGroup;
 import java.time.Duration;
@@ -41,15 +60,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.stubbing.OngoingStubbing;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 
 /**
  * Provides the environment to test a request handler, where a query plan can be defined, and the
@@ -61,64 +77,95 @@ public class RequestHandlerTestHarness implements AutoCloseable {
     return new Builder();
   }
 
-  private final ScheduledTaskCapturingEventLoop schedulingEventLoop;
+  private final CapturingTimer timer = new CapturingTimer();
+  private final Map<Node, ChannelPool> pools;
 
-  @Mock private InternalDriverContext context;
-  @Mock private DefaultSession session;
-  @Mock private EventLoopGroup eventLoopGroup;
-  @Mock private NettyOptions nettyOptions;
-  @Mock private DriverConfig config;
-  @Mock private DriverConfigProfile defaultConfigProfile;
-  @Mock private LoadBalancingPolicyWrapper loadBalancingPolicyWrapper;
-  @Mock private RetryPolicy retryPolicy;
-  @Mock private SpeculativeExecutionPolicy speculativeExecutionPolicy;
-  @Mock private TimestampGenerator timestampGenerator;
+  @Mock protected InternalDriverContext context;
+  @Mock protected DefaultSession session;
+  @Mock protected EventLoopGroup eventLoopGroup;
+  @Mock protected NettyOptions nettyOptions;
+  @Mock protected DriverConfig config;
+  @Mock protected DriverExecutionProfile defaultProfile;
+  @Mock protected LoadBalancingPolicyWrapper loadBalancingPolicyWrapper;
+  @Mock protected RetryPolicy retryPolicy;
+  @Mock protected SpeculativeExecutionPolicy speculativeExecutionPolicy;
+  @Mock protected TimestampGenerator timestampGenerator;
+  @Mock protected ProtocolVersionRegistry protocolVersionRegistry;
+  @Mock protected SessionMetricUpdater sessionMetricUpdater;
 
-  private RequestHandlerTestHarness(Builder builder) {
+  protected RequestHandlerTestHarness(Builder builder) {
     MockitoAnnotations.initMocks(this);
 
-    this.schedulingEventLoop = new ScheduledTaskCapturingEventLoop(eventLoopGroup);
-    Mockito.when(eventLoopGroup.next()).thenReturn(schedulingEventLoop);
-    Mockito.when(nettyOptions.ioEventLoopGroup()).thenReturn(eventLoopGroup);
-    Mockito.when(context.nettyOptions()).thenReturn(nettyOptions);
+    when(nettyOptions.getTimer()).thenReturn(timer);
+    when(nettyOptions.ioEventLoopGroup()).thenReturn(eventLoopGroup);
+    when(context.getNettyOptions()).thenReturn(nettyOptions);
 
+    when(defaultProfile.getName()).thenReturn(DriverExecutionProfile.DEFAULT_NAME);
     // TODO make configurable in the test, also handle profiles
-    Mockito.when(defaultConfigProfile.getDuration(CoreDriverOption.REQUEST_TIMEOUT))
+    when(defaultProfile.getDuration(DefaultDriverOption.REQUEST_TIMEOUT))
         .thenReturn(Duration.ofMillis(500));
-    Mockito.when(defaultConfigProfile.getConsistencyLevel(CoreDriverOption.REQUEST_CONSISTENCY))
-        .thenReturn(ConsistencyLevel.LOCAL_ONE);
-    Mockito.when(defaultConfigProfile.getInt(CoreDriverOption.REQUEST_PAGE_SIZE)).thenReturn(5000);
-    Mockito.when(
-            defaultConfigProfile.getConsistencyLevel(CoreDriverOption.REQUEST_SERIAL_CONSISTENCY))
-        .thenReturn(ConsistencyLevel.SERIAL);
-    Mockito.when(defaultConfigProfile.getBoolean(CoreDriverOption.REQUEST_DEFAULT_IDEMPOTENCE))
+    when(defaultProfile.getString(DefaultDriverOption.REQUEST_CONSISTENCY))
+        .thenReturn(DefaultConsistencyLevel.LOCAL_ONE.name());
+    when(defaultProfile.getInt(DefaultDriverOption.REQUEST_PAGE_SIZE)).thenReturn(5000);
+    when(defaultProfile.getString(DefaultDriverOption.REQUEST_SERIAL_CONSISTENCY))
+        .thenReturn(DefaultConsistencyLevel.SERIAL.name());
+    when(defaultProfile.getBoolean(DefaultDriverOption.REQUEST_DEFAULT_IDEMPOTENCE))
         .thenReturn(builder.defaultIdempotence);
-    Mockito.when(defaultConfigProfile.getBoolean(CoreDriverOption.PREPARE_ON_ALL_NODES))
-        .thenReturn(true);
+    when(defaultProfile.getBoolean(DefaultDriverOption.PREPARE_ON_ALL_NODES)).thenReturn(true);
 
-    Mockito.when(config.getDefaultProfile()).thenReturn(defaultConfigProfile);
-    Mockito.when(context.config()).thenReturn(config);
+    when(config.getDefaultProfile()).thenReturn(defaultProfile);
+    when(context.getConfig()).thenReturn(config);
 
-    Mockito.when(loadBalancingPolicyWrapper.newQueryPlan()).thenReturn(builder.buildQueryPlan());
-    Mockito.when(context.loadBalancingPolicyWrapper()).thenReturn(loadBalancingPolicyWrapper);
+    when(loadBalancingPolicyWrapper.newQueryPlan(
+            any(Request.class), anyString(), any(Session.class)))
+        .thenReturn(builder.buildQueryPlan());
+    when(context.getLoadBalancingPolicyWrapper()).thenReturn(loadBalancingPolicyWrapper);
 
-    Mockito.when(context.retryPolicy()).thenReturn(retryPolicy);
+    when(context.getRetryPolicy(anyString())).thenReturn(retryPolicy);
 
     // Disable speculative executions by default
-    Mockito.when(
-            speculativeExecutionPolicy.nextExecution(
-                any(CqlIdentifier.class), any(Request.class), anyInt()))
+    when(speculativeExecutionPolicy.nextExecution(
+            any(Node.class), any(CqlIdentifier.class), any(Request.class), anyInt()))
         .thenReturn(-1L);
-    Mockito.when(context.speculativeExecutionPolicy()).thenReturn(speculativeExecutionPolicy);
+    when(context.getSpeculativeExecutionPolicy(anyString())).thenReturn(speculativeExecutionPolicy);
 
-    Mockito.when(context.codecRegistry()).thenReturn(new DefaultCodecRegistry("test"));
+    when(context.getCodecRegistry()).thenReturn(CodecRegistry.DEFAULT);
 
-    Mockito.when(timestampGenerator.next()).thenReturn(Long.MIN_VALUE);
-    Mockito.when(context.timestampGenerator()).thenReturn(timestampGenerator);
+    when(timestampGenerator.next()).thenReturn(Statement.NO_DEFAULT_TIMESTAMP);
+    when(context.getTimestampGenerator()).thenReturn(timestampGenerator);
 
-    Map<Node, ChannelPool> pools = builder.buildMockPools();
-    Mockito.when(session.getPools()).thenReturn(pools);
-    Mockito.when(session.getRepreparePayloads()).thenReturn(new ConcurrentHashMap<>());
+    pools = builder.buildMockPools();
+    when(session.getChannel(any(Node.class), anyString()))
+        .thenAnswer(
+            invocation -> {
+              Node node = invocation.getArgument(0);
+              return pools.get(node).next();
+            });
+    when(session.getRepreparePayloads()).thenReturn(new ConcurrentHashMap<>());
+
+    when(session.setKeyspace(any(CqlIdentifier.class)))
+        .thenReturn(CompletableFuture.completedFuture(null));
+
+    when(session.getMetricUpdater()).thenReturn(sessionMetricUpdater);
+    when(sessionMetricUpdater.isEnabled(any(SessionMetric.class), anyString())).thenReturn(true);
+
+    when(session.getMetadata()).thenReturn(DefaultMetadata.EMPTY);
+
+    when(context.getProtocolVersionRegistry()).thenReturn(protocolVersionRegistry);
+    when(protocolVersionRegistry.supports(any(ProtocolVersion.class), any(ProtocolFeature.class)))
+        .thenReturn(true);
+
+    if (builder.protocolVersion != null) {
+      when(context.getProtocolVersion()).thenReturn(builder.protocolVersion);
+    }
+
+    when(context.getConsistencyLevelRegistry()).thenReturn(new DefaultConsistencyLevelRegistry());
+
+    when(context.getWriteTypeRegistry()).thenReturn(new DefaultWriteTypeRegistry());
+
+    when(context.getRequestThrottler()).thenReturn(new PassThroughRequestThrottler(context));
+
+    when(context.getRequestTracker()).thenReturn(new NoopRequestTracker(context));
   }
 
   public DefaultSession getSession() {
@@ -129,22 +176,28 @@ public class RequestHandlerTestHarness implements AutoCloseable {
     return context;
   }
 
+  public DriverChannel getChannel(Node node) {
+    ChannelPool pool = pools.get(node);
+    return pool.next();
+  }
+
   /**
    * Returns the next task that was scheduled on the request handler's admin executor. The test must
    * run it manually.
    */
-  public ScheduledTaskCapturingEventLoop.CapturedTask<?> nextScheduledTask() {
-    return schedulingEventLoop.nextTask();
+  public CapturedTimeout nextScheduledTimeout() {
+    return timer.getNextTimeout();
   }
 
   @Override
   public void close() {
-    schedulingEventLoop.shutdownGracefully().getNow();
+    timer.stop();
   }
 
   public static class Builder {
     private final List<PoolBehavior> poolBehaviors = new ArrayList<>();
     private boolean defaultIdempotence;
+    private ProtocolVersion protocolVersion;
 
     /**
      * Sets the given node as the next one in the query plan; an empty pool will be simulated when
@@ -195,6 +248,11 @@ public class RequestHandlerTestHarness implements AutoCloseable {
       return this;
     }
 
+    public Builder withProtocolVersion(ProtocolVersion protocolVersion) {
+      this.protocolVersion = protocolVersion;
+      return this;
+    }
+
     /**
      * Sets the given node as the next one in the query plan; the test code is responsible of
      * calling the methods on the returned object to complete the write and the query.
@@ -227,11 +285,11 @@ public class RequestHandlerTestHarness implements AutoCloseable {
       Map<Node, OngoingStubbing<DriverChannel>> stubbings = new HashMap<>();
       for (PoolBehavior behavior : poolBehaviors) {
         Node node = behavior.node;
-        ChannelPool pool = pools.computeIfAbsent(node, n -> Mockito.mock(ChannelPool.class));
+        ChannelPool pool = pools.computeIfAbsent(node, n -> mock(ChannelPool.class));
 
         // The goal of the code below is to generate the equivalent of:
         //
-        //     Mockito.when(pool.next())
+        //     when(pool.next())
         //       .thenReturn(behavior1.channel)
         //       .thenReturn(behavior2.channel)
         //       ...
@@ -239,7 +297,7 @@ public class RequestHandlerTestHarness implements AutoCloseable {
             node,
             (sameNode, previous) -> {
               if (previous == null) {
-                previous = Mockito.when(pool.next());
+                previous = when(pool.next());
               }
               return previous.thenReturn(behavior.channel);
             });

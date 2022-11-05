@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,55 +15,64 @@
  */
 package com.datastax.oss.driver.internal.core.cql;
 
+import static com.datastax.oss.driver.Assertions.assertThat;
+import static com.datastax.oss.driver.Assertions.assertThatStage;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
 import com.datastax.oss.driver.api.core.AllNodesFailedException;
 import com.datastax.oss.driver.api.core.NoNodeAvailableException;
+import com.datastax.oss.driver.api.core.config.DriverExecutionProfile;
 import com.datastax.oss.driver.api.core.cql.AsyncResultSet;
-import com.datastax.oss.driver.api.core.cql.SimpleStatement;
+import com.datastax.oss.driver.api.core.cql.Statement;
 import com.datastax.oss.driver.api.core.metadata.Node;
+import com.datastax.oss.driver.api.core.metrics.DefaultNodeMetric;
 import com.datastax.oss.driver.api.core.servererrors.BootstrappingException;
 import com.datastax.oss.driver.api.core.specex.SpeculativeExecutionPolicy;
-import com.datastax.oss.driver.internal.core.util.concurrent.ScheduledTaskCapturingEventLoop;
+import com.datastax.oss.driver.internal.core.util.concurrent.CapturingTimer.CapturedTimeout;
 import com.datastax.oss.protocol.internal.ProtocolConstants;
 import com.datastax.oss.protocol.internal.response.Error;
 import com.tngtech.java.junit.dataprovider.UseDataProvider;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import org.junit.Test;
-import org.mockito.Mockito;
-
-import static com.datastax.oss.driver.Assertions.assertThat;
 
 public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandlerTestBase {
 
   @Test
   @UseDataProvider("nonIdempotentConfig")
   public void should_not_schedule_speculative_executions_if_not_idempotent(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
 
-      new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-          .asyncResult();
+      new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test").handle();
 
       node1Behavior.verifyWrite();
 
-      harness.nextScheduledTask(); // Discard the timeout task
-      assertThat(harness.nextScheduledTask()).isNull();
+      assertThat(harness.nextScheduledTimeout()).isNotNull(); // Discard the timeout task
+      assertThat(harness.nextScheduledTimeout()).isNull();
 
-      Mockito.verifyNoMoreInteractions(speculativeExecutionPolicy);
+      verifyNoMoreInteractions(speculativeExecutionPolicy);
+      verifyNoMoreInteractions(nodeMetricUpdater1);
     }
   }
 
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_schedule_speculative_executions(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -72,38 +81,50 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
       long secondExecutionDelay = 200L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 2))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(2)))
           .thenReturn(secondExecutionDelay);
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 3)).thenReturn(-1L);
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(3)))
+          .thenReturn(-1L);
 
-      new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-          .asyncResult();
+      new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test").handle();
 
       node1Behavior.verifyWrite();
+      node1Behavior.setWriteSuccess();
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
-      firstExecutionTask.run();
+      verifyNoMoreInteractions(nodeMetricUpdater1);
+      speculativeExecution1.task().run(speculativeExecution1);
+      verify(nodeMetricUpdater1)
+          .incrementCounter(
+              DefaultNodeMetric.SPECULATIVE_EXECUTIONS, DriverExecutionProfile.DEFAULT_NAME);
       node2Behavior.verifyWrite();
+      node2Behavior.setWriteSuccess();
 
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> secondExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(secondExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      CapturedTimeout speculativeExecution2 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution2.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(secondExecutionDelay);
-      secondExecutionTask.run();
+      verifyNoMoreInteractions(nodeMetricUpdater2);
+      speculativeExecution2.task().run(speculativeExecution2);
+      verify(nodeMetricUpdater2)
+          .incrementCounter(
+              DefaultNodeMetric.SPECULATIVE_EXECUTIONS, DriverExecutionProfile.DEFAULT_NAME);
       node3Behavior.verifyWrite();
+      node3Behavior.setWriteSuccess();
 
       // No more scheduled tasks since the policy returns 0 on the third call.
-      assertThat(harness.nextScheduledTask()).isNull();
+      assertThat(harness.nextScheduledTimeout()).isNull();
 
       // Note that we don't need to complete any response, the test is just about checking that
       // executions are started.
@@ -113,7 +134,7 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_not_start_execution_if_result_complete(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -121,78 +142,84 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
 
-      CompletionStage<AsyncResultSet> resultSetFuture =
-          new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+      CqlRequestHandler requestHandler =
+          new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test");
+      CompletionStage<AsyncResultSet> resultSetFuture = requestHandler.handle();
       node1Behavior.verifyWrite();
+      node1Behavior.setWriteSuccess();
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
       // Check that the first execution was scheduled but don't run it yet
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
 
       // Complete the request from the initial execution
-      node1Behavior.setWriteSuccess();
       node1Behavior.setResponseSuccess(defaultFrameOf(singleRow()));
-      assertThat(resultSetFuture).isSuccess();
+      assertThatStage(resultSetFuture).isSuccess();
 
-      // The speculative execution should have been cancelled
-      assertThat(firstExecutionTask.isCancelled()).isTrue();
+      // Pending speculative executions should have been cancelled. However we don't check
+      // firstExecutionTask directly because the request handler's onResponse can sometimes be
+      // invoked before operationComplete (this is very unlikely in practice, but happens in our
+      // Travis CI build). When that happens, the speculative execution is not recorded yet when
+      // cancelScheduledTasks runs.
+      // So check the timeout future instead, since it's cancelled in the same method.
+      assertThat(requestHandler.scheduledTimeout.isCancelled()).isTrue();
 
-      // Run the task anyway; we're bending reality a bit here since the task is already cancelled
-      // and wouldn't run, but this allows us to test the case where the completion races with the
-      // start of the task.
-      firstExecutionTask.run();
+      // The fact that we missed the speculative execution is not a problem; even if it starts, it
+      // will eventually find out that the result is already complete and cancel itself:
+      speculativeExecution1.task().run(speculativeExecution1);
       node2Behavior.verifyNoWrite();
+
+      verify(nodeMetricUpdater1)
+          .isEnabled(DefaultNodeMetric.CQL_MESSAGES, DriverExecutionProfile.DEFAULT_NAME);
+      verify(nodeMetricUpdater1)
+          .updateTimer(
+              eq(DefaultNodeMetric.CQL_MESSAGES),
+              eq(DriverExecutionProfile.DEFAULT_NAME),
+              anyLong(),
+              eq(TimeUnit.NANOSECONDS));
+      verifyNoMoreInteractions(nodeMetricUpdater1);
     }
   }
 
   @Test
   @UseDataProvider("idempotentConfig")
-  public void should_fail_if_no_nodes(boolean defaultIdempotence, SimpleStatement statement) {
+  public void should_fail_if_no_nodes(boolean defaultIdempotence, Statement<?> statement) {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     // No configured behaviors => will yield an empty query plan
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
-      // We schedule a first speculative execution before even detecting that the query plan is
-      // empty
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> task = harness.nextScheduledTask();
-      assertThat(task).isNotNull();
-      assertThat(task.getInitialDelay(TimeUnit.MILLISECONDS)).isEqualTo(100);
-
-      assertThat(resultSetFuture)
-          .isFailed(
-              error -> {
-                assertThat(error).isInstanceOf(NoNodeAvailableException.class);
-              });
+      assertThatStage(resultSetFuture)
+          .isFailed(error -> assertThat(error).isInstanceOf(NoNodeAvailableException.class));
     }
   }
 
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_fail_if_no_more_nodes_and_initial_execution_is_last(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -202,42 +229,44 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
       node1Behavior.verifyWrite();
       node1Behavior.setWriteSuccess();
       // do not simulate a response from node1 yet
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
       // Run the next scheduled task to start the speculative execution. node2 will reply with a
       // BOOTSTRAPPING error, causing a RETRY_NEXT; but the query plan is now empty so the
       // speculative execution stops.
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      // next scheduled timeout should be the first speculative execution. Get it and run it.
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
-      firstExecutionTask.run();
+      speculativeExecution1.task().run(speculativeExecution1);
 
       // node1 now replies with the same response, that triggers a RETRY_NEXT
       node1Behavior.setResponseSuccess(
           defaultFrameOf(new Error(ProtocolConstants.ErrorCode.IS_BOOTSTRAPPING, "mock message")));
 
       // But again the query plan is empty so that should fail the request
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(
               error -> {
                 assertThat(error).isInstanceOf(AllNodesFailedException.class);
-                Map<Node, Throwable> nodeErrors = ((AllNodesFailedException) error).getErrors();
+                Map<Node, List<Throwable>> nodeErrors =
+                    ((AllNodesFailedException) error).getAllErrors();
                 assertThat(nodeErrors).containsOnlyKeys(node1, node2);
-                assertThat(nodeErrors.get(node1)).isInstanceOf(BootstrappingException.class);
-                assertThat(nodeErrors.get(node2)).isInstanceOf(BootstrappingException.class);
+                assertThat(nodeErrors.get(node1).get(0)).isInstanceOf(BootstrappingException.class);
+                assertThat(nodeErrors.get(node2).get(0)).isInstanceOf(BootstrappingException.class);
               });
     }
   }
@@ -245,7 +274,7 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_fail_if_no_more_nodes_and_speculative_execution_is_last(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -253,26 +282,26 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
       node1Behavior.verifyWrite();
       node1Behavior.setWriteSuccess();
       // do not simulate a response from node1 yet
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
-      // Run the next scheduled task to start the speculative execution.
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      // next scheduled timeout should be the first speculative execution. Get it and run it.
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
-      firstExecutionTask.run();
+      speculativeExecution1.task().run(speculativeExecution1);
 
       // node1 now replies with a BOOTSTRAPPING error that triggers a RETRY_NEXT
       // but the query plan is empty so the initial execution stops
@@ -284,14 +313,15 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
       node2Behavior.setResponseSuccess(
           defaultFrameOf(new Error(ProtocolConstants.ErrorCode.IS_BOOTSTRAPPING, "mock message")));
 
-      assertThat(resultSetFuture)
+      assertThatStage(resultSetFuture)
           .isFailed(
               error -> {
                 assertThat(error).isInstanceOf(AllNodesFailedException.class);
-                Map<Node, Throwable> nodeErrors = ((AllNodesFailedException) error).getErrors();
+                Map<Node, List<Throwable>> nodeErrors =
+                    ((AllNodesFailedException) error).getAllErrors();
                 assertThat(nodeErrors).containsOnlyKeys(node1, node2);
-                assertThat(nodeErrors.get(node1)).isInstanceOf(BootstrappingException.class);
-                assertThat(nodeErrors.get(node2)).isInstanceOf(BootstrappingException.class);
+                assertThat(nodeErrors.get(node1).get(0)).isInstanceOf(BootstrappingException.class);
+                assertThat(nodeErrors.get(node2).get(0)).isInstanceOf(BootstrappingException.class);
               });
     }
   }
@@ -299,7 +329,7 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_retry_in_speculative_executions(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -308,25 +338,28 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
 
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
       node1Behavior.verifyWrite();
       node1Behavior.setWriteSuccess();
-      // do not simulate a response from node1. The request will stay hanging for the rest of this test
+      // do not simulate a response from node1. The request will stay hanging for the rest of this
+      // test
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      // next scheduled timeout should be the first speculative execution. Get it and run it.
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
-      firstExecutionTask.run();
+      speculativeExecution1.task().run(speculativeExecution1);
+
       node2Behavior.verifyWrite();
       node2Behavior.setWriteSuccess();
 
@@ -335,7 +368,7 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
           defaultFrameOf(new Error(ProtocolConstants.ErrorCode.IS_BOOTSTRAPPING, "mock message")));
 
       // The second execution should move to node3 and complete the request
-      assertThat(resultSetFuture).isSuccess();
+      assertThatStage(resultSetFuture).isSuccess();
 
       // The request to node1 was still in flight, it should have been cancelled
       node1Behavior.verifyCancellation();
@@ -345,7 +378,7 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
   @Test
   @UseDataProvider("idempotentConfig")
   public void should_stop_retrying_other_executions_if_result_complete(
-      boolean defaultIdempotence, SimpleStatement statement) {
+      boolean defaultIdempotence, Statement<?> statement) throws Exception {
     RequestHandlerTestHarness.Builder harnessBuilder =
         RequestHandlerTestHarness.builder().withDefaultIdempotence(defaultIdempotence);
     PoolBehavior node1Behavior = harnessBuilder.customBehavior(node1);
@@ -354,32 +387,34 @@ public class CqlRequestHandlerSpeculativeExecutionTest extends CqlRequestHandler
 
     try (RequestHandlerTestHarness harness = harnessBuilder.build()) {
       SpeculativeExecutionPolicy speculativeExecutionPolicy =
-          harness.getContext().speculativeExecutionPolicy();
+          harness.getContext().getSpeculativeExecutionPolicy(DriverExecutionProfile.DEFAULT_NAME);
       long firstExecutionDelay = 100L;
-      Mockito.when(speculativeExecutionPolicy.nextExecution(null, statement, 1))
+      when(speculativeExecutionPolicy.nextExecution(
+              any(Node.class), eq(null), eq(statement), eq(1)))
           .thenReturn(firstExecutionDelay);
-
       CompletionStage<AsyncResultSet> resultSetFuture =
           new CqlRequestHandler(statement, harness.getSession(), harness.getContext(), "test")
-              .asyncResult();
+              .handle();
       node1Behavior.verifyWrite();
+      node1Behavior.setWriteSuccess();
 
-      harness.nextScheduledTask(); // Discard the timeout task
+      harness.nextScheduledTimeout(); // Discard the timeout task
 
-      ScheduledTaskCapturingEventLoop.CapturedTask<?> firstExecutionTask =
-          harness.nextScheduledTask();
-      assertThat(firstExecutionTask.getInitialDelay(TimeUnit.MILLISECONDS))
+      // next scheduled timeout should be the first speculative execution. Get it and run it.
+      CapturedTimeout speculativeExecution1 = harness.nextScheduledTimeout();
+      assertThat(speculativeExecution1.getDelay(TimeUnit.MILLISECONDS))
           .isEqualTo(firstExecutionDelay);
-      firstExecutionTask.run();
+      speculativeExecution1.task().run(speculativeExecution1);
+
       node2Behavior.verifyWrite();
       node2Behavior.setWriteSuccess();
 
       // Complete the request from the initial execution
-      node1Behavior.setWriteSuccess();
       node1Behavior.setResponseSuccess(defaultFrameOf(singleRow()));
-      assertThat(resultSetFuture).isSuccess();
+      assertThatStage(resultSetFuture).isSuccess();
 
-      // node2 replies with a response that would trigger a RETRY_NEXT if the request was still running
+      // node2 replies with a response that would trigger a RETRY_NEXT if the request was still
+      // running
       node2Behavior.setResponseSuccess(
           defaultFrameOf(new Error(ProtocolConstants.ErrorCode.IS_BOOTSTRAPPING, "mock message")));
 

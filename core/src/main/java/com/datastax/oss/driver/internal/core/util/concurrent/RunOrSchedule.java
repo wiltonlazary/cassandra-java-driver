@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,13 +81,13 @@ public class RunOrSchedule {
       executor
           .submit(task)
           .addListener(
-              ((Future<CompletionStage<T>> f) -> {
+              (Future<CompletionStage<T>> f) -> {
                 if (f.isSuccess()) {
                   CompletableFutures.completeFrom(f.getNow(), result);
                 } else {
                   result.completeExceptionally(f.cause());
                 }
-              }));
+              });
       return result;
     }
   }

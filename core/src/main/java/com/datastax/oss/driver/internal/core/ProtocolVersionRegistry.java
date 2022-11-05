@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2017 DataStax Inc.
+ * Copyright DataStax, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package com.datastax.oss.driver.internal.core;
 
 import com.datastax.oss.driver.api.core.ProtocolVersion;
 import com.datastax.oss.driver.api.core.UnsupportedProtocolVersionException;
-import com.datastax.oss.driver.api.core.config.CoreDriverOption;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.internal.core.metadata.TopologyMonitor;
 import java.util.Collection;
@@ -27,18 +27,11 @@ import java.util.Optional;
 public interface ProtocolVersionRegistry {
 
   /**
-   * Look up a version by its {@link ProtocolVersion#getCode()} code}.
-   *
-   * @throws IllegalArgumentException if there is no known version with this code.
-   */
-  ProtocolVersion fromCode(int code);
-
-  /**
    * Look up a version by its {@link ProtocolVersion#name() name}. This is used when a version was
    * forced in the configuration.
    *
    * @throws IllegalArgumentException if there is no known version with this name.
-   * @see CoreDriverOption#PROTOCOL_VERSION
+   * @see DefaultDriverOption#PROTOCOL_VERSION
    */
   ProtocolVersion fromName(String name);
 
@@ -66,4 +59,7 @@ public interface ProtocolVersionRegistry {
    *     the driver initialization to fail.
    */
   ProtocolVersion highestCommon(Collection<Node> nodes);
+
+  /** Whether a given version supports a given feature. */
+  boolean supports(ProtocolVersion version, ProtocolFeature feature);
 }
